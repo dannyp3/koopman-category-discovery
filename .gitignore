@@ -1,9 +1,11 @@
 # Ignore node_modules directory
 runs/
 plots/
-.ipynb_checkpoints/
+*.ipynb_checkpoints/
 
-# Ignore all .log files
+# Ignore all of the following files
 *.log
 *.png
 *.html
+egg-info
+*.pkl
