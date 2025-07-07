@@ -1,0 +1,9 @@
+# Ignore node_modules directory
+runs/
+plots/
+.ipynb_checkpoints/
+
+# Ignore all .log files
+*.log
+*.png
+*.html
