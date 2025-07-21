@@ -219,7 +219,7 @@ class KoopmanCategoryModel:
 
         self.df = df
 
-    def train_test_split(self, test_size, codebook_training_size):
+    def train_test_split(self, test_size, codebook_training_size, category_discovery=False):
 
         self.test_size = test_size
         n_splits = int(1 / self.test_size)
@@ -589,49 +589,6 @@ class KoopmanCategoryModel:
     def _optimize_MDS_dim(self):
         pass
         
-    def fit(self, X, y=None):
-        """
-        Main pipeline to fit DMD and optionally a classifier.
-        X: np.ndarray of shape (n_samples, n_timesteps, n_features)
-        y: Optional labels for classification
-        """
-        features = self._extract_dmd_features(X)
-        features_scaled = self.scaler.fit_transform(features)
-
-        if y is not None:
-            self.classifier.fit(features_scaled, y)
-        else:
-            self._perform_clustering(features_scaled)
-
-    def predict(self, X):
-        """
-        Predict categories (either clusters or classes)
-        """
-        features = self._extract_dmd_features(X)
-        features_scaled = self.scaler.transform(features)
-
-        if hasattr(self.classifier, "predict"):
-            return self.classifier.predict(features_scaled)
-        else:
-            return self._perform_clustering(features_scaled, return_labels=True)
-
-    def _extract_dmd_features(self, X):
-        """
-        Apply DMD to each sample and return vectorized Koopman features.
-        """
-        features = []
-        for sample in X:
-            modes = self._compute_dmd(sample)
-            features.append(modes.flatten().real)  # Simplified; you can include eigenvalues, etc.
-        return np.array(features)
-
-    def _perform_clustering(self, features, return_labels=False):
-        if self.cluster_method == 'kmeans':
-            self.kmeans = KMeans(n_clusters=3, random_state=self.seed)
-            self.kmeans.fit(features)
-            if return_labels:
-                return self.kmeans.predict(features)
-            self.labels = self.kmeans.labels_
 
     def get_params(self):
         return {
@@ -640,16 +597,10 @@ class KoopmanCategoryModel:
             'classifier': self.classifier.__class__.__name__
         }
 
-    def _out(self, name: str, ext="png"):
-        """Return full path inside this run’s directory."""
-        return self.run_dir / f"{name}.{ext}"
-
-
     def _save_current_fig(self, name: str, ext="png", dpi=300):
         plt.gcf().savefig(self.run_dir / f"{name}.{ext}", dpi=dpi,
                           bbox_inches="tight")
         plt.close()
-
 
 
     def plot_data(self, samples_to_plot=3):
