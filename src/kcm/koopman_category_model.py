@@ -12,7 +12,7 @@ from sklearn.manifold import MDS
 from sklearn.cluster import k_means
 from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
-from sklearn.model_selection import train_test_split, StratifiedGroupKFold
+from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 
 from tqdm import tqdm
@@ -219,28 +219,88 @@ class KoopmanCategoryModel:
 
         self.df = df
 
-    def train_test_split(self, test_size, codebook_training_size, category_discovery=False):
+    def train_test_split(self, test_size, codebook_training_size, category_discovery=False, num_train_classes=0.75):
 
+        self.codebook_training_size = codebook_training_size
+
+        # Define stratified splitter for even class representation
         self.test_size = test_size
         n_splits = int(1 / self.test_size)
-        
         sgkf  = StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=self.seed)
-        groups = self.df['sample']
-        y      = self.df['target']
+
         
-        train_idx, test_idx = next(sgkf.split(self.df, y=y, groups=groups))
-        self.df_train = self.df.iloc[train_idx].reset_index(drop=True)
-        self.df_test  = self.df.iloc[test_idx].reset_index(drop=True)
+
+        # Exclude certain classes from training set for category discovery
+        if category_discovery:
+            
+            self.num_train_classes = num_train_classes
+            
+            # Define classes used for training and testing
+            self.train_classes = self.rng.choice(range(len(self.cats)),size=num_train_classes,replace=False)
+            self.test_classes = np.array(list(set(range(len(self.cats))) - set(self.train_classes)))
+
+            self.logger.info(f"Train classes: {self.train_classes}, Test classes: {self.test_classes}")
+
+            # create train and test split in the dataframe for training classes only
+            # (preserving train/test proportion across target classes)
+            df_train_subset = self.df.loc[self.df['target'].isin(self.train_classes)]
+            groups = df_train_subset['sample']
+            y      = df_train_subset['target']
+
+            train_ilocs, test_ilocs = next(sgkf.split(df_train_subset, y=y.values, groups=groups))
+            self.known_class_train_idx = df_train_subset.index[train_ilocs]
+            known_class_test_idx = df_train_subset.index[test_ilocs]
+            
+            unknown_class_idx = self.df.loc[self.df['target'].isin(self.test_classes)].index
+
+            self.test_idx = list(set(known_class_test_idx).union(set(unknown_class_idx)))
+
+            
+            if len(self.test_idx) != len(known_class_test_idx) + len(unknown_class_idx):
+                raise ValueError(f'Train test split for category discovery mismatch: total test segments {len(self.test_idx)} != {len(known_class_test_idx)} + {len(unknown_class_idx)}')
+
+            # Create train/test dataframes based on chosen indices
+            self.df_train = df_train_subset.loc[self.known_class_train_idx].reset_index(drop=True)
+            self.df_test  = self.df.loc[self.test_idx].reset_index(drop=True)
+
+            self.logger.info(f"Train class counts:\n{self.df_train['target'].value_counts()}")
+            self.logger.info(f"Test class counts:\n{self.df_test['target'].value_counts()}")
+
+            class_size = self.codebook_training_size // len(self.train_classes) // self.num_segments
+
+
+            
+        
+        # Train on all classes
+        if not category_discovery:
+    
+            # create train and test split in the dataframe for all classes
+            # (preserving train/test proportion across target classes)
+            groups = self.df['sample']
+            y      = self.df['target']
+            train_idx, test_idx = next(sgkf.split(self.df, y=y, groups=groups))
+
+            # Create train/test dataframes based on chosen indices
+            self.df_train = self.df.iloc[train_idx].reset_index(drop=True)
+            self.df_test  = self.df.iloc[test_idx].reset_index(drop=True)
+
+            class_size = self.codebook_training_size // self.num_cats // self.num_segments
+
+
+
+        self.df_train = self.df_train.sort_values(['target', 'sample', 'segment']).reset_index(drop=True)
+        self.df_test  = self.df_test.sort_values(['target', 'sample', 'segment']).reset_index(drop=True)
+        
         
         self.logger.info(f'Training set size: {self.df_train.shape[0]}')
         self.logger.info(f'Testing set size: {self.df_test.shape[0]}')
         
         
-        self.codebook_training_size = codebook_training_size
-        size = self.codebook_training_size // self.num_cats // self.num_segments
-        
-        samples_to_keep = self.df_train[['target','sample']].drop_duplicates().groupby('target').apply(lambda g: g.sample(size, random_state=self.seed)).reset_index(drop=True)
+        samples_to_keep = self.df_train[['target','sample']].drop_duplicates().groupby('target').apply(lambda g: g.sample(class_size, random_state=self.seed)).reset_index(drop=True)
         self.df_sample = self.df.merge(samples_to_keep, on=["target", "sample"], how="inner")
+
+        if len(self.df_sample) < self.codebook_training_size:
+            print(f'Reducing codebook size from {self.codebook_training_size} to {len(self.df_sample)} based on codebook_training_size // <number of training classes> // num_segments')
         
         self.logger.info(f'Codebook training size: {self.codebook_training_size}')
 
@@ -288,7 +348,7 @@ class KoopmanCategoryModel:
         num_changed = np.sum(abs(self.sample_label - label) >= tol)
         self.logger.info(f'{num_changed}/{self.df_sample.shape[0]} labels changed ({round(num_changed/self.df_sample.shape[0] * 100,2)}%) when choosing training points as cluster centers')
 
-
+    
         # Represent training and testing datasets with codebook
         self.train_metric_matrix = self._create_metric_matrix(self.codebook,self.df_train)
         self.test_metric_matrix = self._create_metric_matrix(self.codebook,self.df_test)
@@ -326,31 +386,46 @@ class KoopmanCategoryModel:
             self.plot_MDS(color_by_target=False)
 
 
-        # Identify number of samples from each system category in both training and testing samples
-        self.num_train_samples = int(len(self.df_train.groupby(['target','sample']).groups) / self.num_cats)
-        self.num_test_samples = int(len(self.df_test.groupby(['target','sample']).groups) / self.num_cats)
+
+
+        # Create histogram data
+        self.training_histograms, self.c_train_matrix, self.train_target = self._compute_cluster_histograms(self.df_train,self.train_metric_matrix)
+        self.testing_histograms, self.c_test_matrix, self.test_target = self._compute_cluster_histograms(self.df_test,self.test_metric_matrix)
         
-        # Create cluster assignments for each segment in training and testing set
-        self.train_cluster_assignments = np.argmin(self.train_metric_matrix,axis=0).reshape(self.num_cats,self.num_train_samples,self.num_segments)
-        self.test_cluster_assignments = np.argmin(self.test_metric_matrix,axis=0).reshape(self.num_cats,self.num_test_samples,self.num_segments)
+        self.N_ks = np.sum(self.training_histograms > 0,axis=0)
+        self.N = len(self.train_target)
         
-        # Count number of each cluster assignment in training set
-        self.N_ks = np.array([(np.sum(self.train_cluster_assignments == i,axis=2) > 0).ravel().sum() for i in range(self.num_clusters)])
-        self.N = self.num_cats * self.num_samples # Total number of time series samples
-        
-        # Create histogram of cluster assignments for training data
-        self.n_train_matrix = np.concatenate([np.sum(self.train_cluster_assignments == i,axis=2).ravel() for i in range(self.num_clusters)]).reshape(self.num_clusters,self.num_cats*self.num_train_samples).T
-        self.c_train_matrix = self.n_train_matrix / self.num_segments
         self.inv_c_train_matrix = self.c_train_matrix * np.log(self.N / self.N_ks)
-        
-        # Create histogram of cluster assignments for testing data
-        self.n_test_matrix = np.concatenate([np.sum(self.test_cluster_assignments == i,axis=2).ravel() for i in range(self.num_clusters)]).reshape(self.num_clusters,self.num_cats*self.num_test_samples).T
-        self.c_test_matrix = self.n_test_matrix / self.num_segments
         self.inv_c_test_matrix = self.c_test_matrix * np.log(self.N / self.N_ks)
+
         
-        # Extract target assignments (classification labels)
-        self.train_target = self.df_train['target'].values[-self.num_segments::-self.num_segments][-1::-1]
-        self.test_target = self.df_test['target'].values[-self.num_segments::-self.num_segments][-1::-1]
+
+
+        # # Identify number of samples from each system category in both training and testing samples
+        # self.num_train_samples = int(len(self.df_train.groupby(['target','sample']).groups) / self.num_cats)
+        # self.num_test_samples = int(len(self.df_test.groupby(['target','sample']).groups) / self.num_cats)
+        
+        # # Create cluster assignments for each segment in training and testing set
+        # self.train_cluster_assignments = np.argmin(self.train_metric_matrix,axis=0).reshape(self.num_cats,self.num_train_samples,self.num_segments)
+        # self.test_cluster_assignments = np.argmin(self.test_metric_matrix,axis=0).reshape(self.num_cats,self.num_test_samples,self.num_segments)
+        
+        # # Count number of each cluster assignment in training set
+        # self.N_ks = np.array([(np.sum(self.train_cluster_assignments == i,axis=2) > 0).ravel().sum() for i in range(self.num_clusters)])
+        # self.N = self.df_train.shape[0] # Total number of time series samples
+        
+        # # Create histogram of cluster assignments for training data
+        # self.n_train_matrix = np.concatenate([np.sum(self.train_cluster_assignments == i,axis=2).ravel() for i in range(self.num_clusters)]).reshape(self.num_clusters,self.num_cats*self.num_train_samples).T
+        # self.c_train_matrix = self.n_train_matrix / self.num_segments
+        # self.inv_c_train_matrix = self.c_train_matrix * np.log(self.N / self.N_ks)
+        
+        # # Create histogram of cluster assignments for testing data
+        # self.n_test_matrix = np.concatenate([np.sum(self.test_cluster_assignments == i,axis=2).ravel() for i in range(self.num_clusters)]).reshape(self.num_clusters,self.num_cats*self.num_test_samples).T
+        # self.c_test_matrix = self.n_test_matrix / self.num_segments
+        # self.inv_c_test_matrix = self.c_test_matrix * np.log(self.N / self.N_ks)
+
+        # # Extract target assignments (classification labels)
+        # self.train_target = self.df_train['target'].values[-self.num_segments::-self.num_segments][-1::-1]
+        # self.test_target = self.df_test['target'].values[-self.num_segments::-self.num_segments][-1::-1]
         
 
     def perform_classification(self, classifier=None, return_statement=False):
@@ -575,6 +650,40 @@ class KoopmanCategoryModel:
             self.logger.info("Optimization failed:", result.message)
     
         return wasserstein_metric
+
+
+
+    # Create histogram of cluster assignments for a given dataframe and metric matrix
+    def _compute_cluster_histograms(self,df,metric_matrix):
+
+        samples = (
+            df
+            .sort_values(['target', 'sample', 'segment'])
+            .drop_duplicates(['target', 'sample'])
+            [['target', 'sample']]
+            .reset_index(drop=True)
+        )
+    
+        cluster_assignments = np.argmin(metric_matrix, axis=0)
+    
+        histograms = np.zeros((samples.shape[0],self.num_clusters))
+
+        # Loop through each individual sample
+        for i, (target, sample) in samples.iterrows():
+        
+            seg_start = i * self.num_segments
+            seg_end = seg_start + self.num_segments
+            assign_clusters = cluster_assignments[seg_start:seg_end]
+        
+            histogram = np.bincount(assign_clusters, minlength=self.num_clusters)
+            histograms[i,:] = histogram
+    
+        
+        c_matrix = histograms / self.num_segments
+    
+        targets = samples.target
+    
+        return histograms, c_matrix, targets
 
 
     def shutdown_logger(self):
