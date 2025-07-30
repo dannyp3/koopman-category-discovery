@@ -1,5 +1,6 @@
 pyproject.toml
 src/kcm/__init__.py
+src/kcm/discovery.py
 src/kcm/koopman_category_model.py
 src/kcm.egg-info/PKG-INFO
 src/kcm.egg-info/SOURCES.txt

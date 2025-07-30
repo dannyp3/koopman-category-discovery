@@ -213,16 +213,16 @@ def split_cluster_acc_v2(y_true, y_pred, mask):
 
 
 
-def create_cluster_ids(output, y):
+def create_hash_ids(output, y):
     
     hashes = torch.where(output > 0, 1, 0)
     unique_hashes = torch.unique(hashes, dim=0)
-    hashes_bin = np.array(hashes)
-    cluster_ids = np.array([int("".join(map(str, row)), 2) for row in hashes_bin])
+    hashes = np.array(hashes)
+    hash_ids = np.array([int("".join(map(str, row)), 2) for row in hashes])
 
-    _, new_labels = np.unique(cluster_ids, return_inverse=True)
+    _, new_labels = np.unique(hash_ids, return_inverse=True)
 
-    return new_labels
+    return hash_ids, hashes, new_labels
 
 
 

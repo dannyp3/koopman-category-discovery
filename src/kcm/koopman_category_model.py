@@ -127,12 +127,14 @@ class KoopmanCategoryModel:
         if self.data_path is None:
             file_path = self._data_path(
                 f"{self.system_dimension}-dimensional-systems",
-                f"dataset_{self.num_cats}_class_{self.num_samples}_samples.pkl"
+                f"dataset_{self.num_cats}_class_{self.num_samples}_noisy_samples.pkl"
             )
             self.data_path = file_path
         else:
             file_path = Path(self.data_path)
 
+        print(f'Loading data in at {self.data_path}...')
+        
         with open(file_path, "rb") as f:
             return pickle.load(f)
         
@@ -219,7 +221,7 @@ class KoopmanCategoryModel:
 
         self.df = df
 
-    def train_test_split(self, test_size, codebook_training_size, category_discovery=False, num_train_classes=0.75):
+    def train_test_split(self, test_size, codebook_training_size, category_discovery=False, train_classes=range(3)):
 
         self.codebook_training_size = codebook_training_size
 
@@ -233,10 +235,10 @@ class KoopmanCategoryModel:
         # Exclude certain classes from training set for category discovery
         if category_discovery:
             
-            self.num_train_classes = num_train_classes
+            self.train_classes = np.array(train_classes)
             
             # Define classes used for training and testing
-            self.train_classes = self.rng.choice(range(len(self.cats)),size=num_train_classes,replace=False)
+            # self.train_classes = self.rng.choice(range(len(self.cats)),size=num_train_classes,replace=False)
             self.test_classes = np.array(list(set(range(len(self.cats))) - set(self.train_classes)))
 
             self.logger.info(f"Train classes: {self.train_classes}, Test classes: {self.test_classes}")
