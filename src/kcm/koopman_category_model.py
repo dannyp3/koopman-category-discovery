@@ -27,7 +27,8 @@ import joblib
 
 class KoopmanCategoryModel:
     def __init__(self, num_cats=None, num_samples=None, system_dimension=None, data_path=None, delay_embeddings=0, num_segments=5,
-                 svd_rank=None, dmd_rank=None, q=1, cluster_method='kmeans', num_clusters=None, run_root: str | Path | None = None, seed=None):
+                 svd_rank=None, dmd_rank=None, q=1, cluster_method='kmeans', num_clusters=None, noisy_data=True,
+                 normalize_inputs=True, run_root: str | Path | None = None, seed=None):
 
         logger = logging.getLogger("KCM")
         
@@ -70,10 +71,12 @@ class KoopmanCategoryModel:
         self.num_segments = num_segments
         self.system_dimension = system_dimension
         self.data_path = data_path
+        self.noisy_data = noisy_data
         self.dataset = self._load_data(data_path)
         self.cats = list(self.dataset.keys())
         self.m, self.n = self.dataset[self.cats[0]][0]['y'].shape
         self.segment_length = int(self.n/self.num_segments)
+        self.normalize_inputs = normalize_inputs
 
         # DMD Parameters
         self.delay_embeddings = delay_embeddings
@@ -105,6 +108,7 @@ class KoopmanCategoryModel:
                          f'num_segments: {self.num_segments}',
                          f'data_path: {self.data_path}',
                          f'cats (categories) : {self.cats}',
+                         f'normalize_inputs : {self.normalize_inputs}',
                          f'delay_embeddings: {self.delay_embeddings}',
                          f'total_observables: {self.total_observables}',
                          f'svd_rank: {self.svd_rank}',
@@ -125,11 +129,15 @@ class KoopmanCategoryModel:
         """
 
         if self.data_path is None:
+            
+            samples_name = 'noisy_samples' if self.noisy_data else 'samples'
+            
             file_path = self._data_path(
                 f"{self.system_dimension}-dimensional-systems",
-                f"dataset_{self.num_cats}_class_{self.num_samples}_noisy_samples.pkl"
+                f"dataset_{self.num_cats}_class_{self.num_samples}_{samples_name}.pkl"
             )
             self.data_path = file_path
+            
         else:
             file_path = Path(self.data_path)
 
@@ -156,6 +164,9 @@ class KoopmanCategoryModel:
             for index in range(self.num_samples):
         
                 X = curr_data[index]['y'].T
+
+                if self.normalize_inputs:
+                    X = (X - X.mean(axis=0)) / X.std(axis=0)
                 
                 if self.delay_embeddings > 0:
                     X = np.hstack([X[i:self.n-self.delay_embeddings+i,:] for i in range(self.delay_embeddings+1)])
@@ -472,16 +483,29 @@ class KoopmanCategoryModel:
             return scores, confs
 
 
-    def save(self, name: str = "model.pkl"):
+    def save(self, name: str = "koopman_model.pkl"):
         """Save *this* model object to <run_dir>/<name>."""
         path = self.run_dir / name
         joblib.dump(self, path)
-        self.logger.info("Model saved to %s", path)
+        self.logger.info("Koopman model saved to %s", path)
 
     @staticmethod
     def load(path):
         """Load a previously-saved model."""
-        return joblib.load(path)
+
+        path = Path(path)
+    
+        if not path.is_absolute():
+            # Interpret path relative to the repo root
+            repo_root = Path(__file__).resolve().parents[2]
+            path = repo_root / path
+    
+        if not path.exists():
+            raise FileNotFoundError(f"Model file does not exist: {path}")
+    
+        model = joblib.load(path)
+    
+        return model
 
         
     def _repo_root(self) -> Path:
