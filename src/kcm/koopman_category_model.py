@@ -27,7 +27,7 @@ import joblib
 
 class KoopmanCategoryModel:
     def __init__(self, num_cats=None, num_samples=None, system_dimension=None, data_path=None, delay_embeddings=0, num_segments=5,
-                 svd_rank=None, dmd_rank=None, q=1, cluster_method='kmeans', num_clusters=None, noisy_data=True,
+                 svd_rank=None, dmd_rank=None, q=1, cluster_method='kmeans', num_clusters=None, noisy_data=True, noise_std=None, 
                  normalize_inputs=True, run_root: str | Path | None = None, seed=None):
 
         logger = logging.getLogger("KCM")
@@ -72,6 +72,7 @@ class KoopmanCategoryModel:
         self.system_dimension = system_dimension
         self.data_path = data_path
         self.noisy_data = noisy_data
+        self.noise_std = noise_std
         self.dataset = self._load_data(data_path)
         self.cats = list(self.dataset.keys())
         self.m, self.n = self.dataset[self.cats[0]][0]['y'].shape
@@ -130,7 +131,7 @@ class KoopmanCategoryModel:
 
         if self.data_path is None:
             
-            samples_name = 'noisy_samples' if self.noisy_data else 'samples'
+            samples_name = f'noisy_{self.noise_std}_samples' if self.noisy_data else 'samples'
             
             file_path = self._data_path(
                 f"{self.system_dimension}-dimensional-systems",
@@ -229,6 +230,8 @@ class KoopmanCategoryModel:
         df['target'] = df['target'].astype(int)
         df['sample'] = df['sample'].astype(int)
         df['segment'] = df['segment'].astype(int)
+        count = (np.ones((self.num_cats * self.num_samples,self.num_segments)) * np.arange(self.num_cats * self.num_samples)[:,np.newaxis]).ravel().astype(int)
+        df['count'] = count
 
         self.df = df
 
@@ -318,8 +321,38 @@ class KoopmanCategoryModel:
         self.logger.info(f'Codebook training size: {self.codebook_training_size}')
 
 
-    def create_codebook(self,include_plots=False):
+    def create_codebook(self,codebook_training_size=None,category_discovery=True,train_classes=None,include_plots=False):
 
+        # Update codebook size
+        if codebook_training_size is None:
+            assert hasattr(self, 'codebook_training_size'), 'No codebook training size given or retained'
+            print(f'Using previous codebook training size of {self.codebook_training_size}')
+        else:
+            self.codebook_training_size = codebook_training_size
+
+        # Check if df_train and df_test have been added to the instance
+        assert hasattr(self, 'df_train') and hasattr(self, 'df_test'), 'Model has not train/test split yet'
+
+        # Create a sample from the training data for creating the codebook
+        if not hasattr(self, 'df_sample'):
+            print('Creating df_sample for codebook')
+            
+            if category_discovery:
+                self.train_classes = train_classes
+                class_size = self.codebook_training_size // len(self.train_classes) // self.num_segments
+            else:
+                class_size = self.codebook_training_size // self.num_cats // self.num_segments
+
+            # Take an identically sized sample from each target class for the codebook
+            samples_to_keep = (self.df_train[['target','sample']]
+                .drop_duplicates()
+                .groupby('target')
+                .apply(lambda g: g.sample(class_size, random_state=self.seed, replace=False))
+                .reset_index(drop=True)
+            )
+            self.df_sample = self.df.merge(samples_to_keep, on=["target", "sample"], how="inner")
+
+        
         # Create Wasserstein Distance Matrix from downsampled training points
         metric_matrix = self._create_metric_matrix(self.df_sample)
 
@@ -410,8 +443,6 @@ class KoopmanCategoryModel:
         
         self.inv_c_train_matrix = self.c_train_matrix * np.log(self.N / self.N_ks)
         self.inv_c_test_matrix = self.c_test_matrix * np.log(self.N / self.N_ks)
-
-        
 
 
         # # Identify number of samples from each system category in both training and testing samples
