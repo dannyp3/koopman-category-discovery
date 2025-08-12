@@ -52,7 +52,7 @@ class BasicFeatureExtractor():
             
             file_path = self._data_path(
                 f"{self.system_dimension}-dimensional-systems",
-                f"dataset_{self.num_cats}_class_{self.num_samples}_{samples_name}.pkl"
+                f"dataset_{self.num_cats}_class_{self.num_samples}_{samples_name}__OLD.pkl"
             )
             self.data_path = file_path
             

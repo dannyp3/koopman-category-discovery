@@ -7,6 +7,8 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score, adjusted_mutual_info_score
 from tqdm import tqdm
 
+from kcm.utils import save_plot
+
 import torch
 import torch.nn as nn
 
@@ -501,7 +503,7 @@ class CategoryDiscoveryTrainer():
             self.unique_testing_hashes.append(len(np.unique(testing_hash_ids)))
 
 
-    def plot_loss(self, log=True):
+    def plot_loss(self, log=True, show=False):
     
         plt.figure(figsize=(5,2))
         if log:
@@ -511,10 +513,11 @@ class CategoryDiscoveryTrainer():
         plt.xlabel('Epoch')
         plt.ylabel('Loss')
         plt.title('Supervised Contrastive Loss')
-        plt.show()
+        if show:
+            plt.show()
 
 
-    def plot_unique_hash_count(self):
+    def plot_unique_hash_count(self, show=False):
         
         plt.figure(figsize=(5,2))
         plt.plot(self.unique_training_hashes,label='Training')
@@ -523,10 +526,11 @@ class CategoryDiscoveryTrainer():
         plt.ylabel('Unique Hashes')
         plt.title('Number of Unique Hashes')
         plt.legend()
-        plt.show()
+        if show:
+            plt.show()
 
 
-    def plot_scores(self):
+    def plot_scores(self, show=False):
         
         figs, axes = plt.subplots(1,3,figsize=(12,3))
         
@@ -567,16 +571,15 @@ class CategoryDiscoveryTrainer():
         
         plt.suptitle('Category Discovery Metrics')
         plt.tight_layout()
-        plt.show()
+        if show:
+            plt.show()
 
 
-    def plot_hashes(self, index=-1, split_testing=False):
+    def plot_hashes(self, index=-1, split_testing=False, show=False, save_dir=None, base_filename="koopman_hashes"):
 
-        # data = {'cluster_id' : training_cluster_ids, 'y' : y_train}
         data = {'cluster_id' : self.all_training_hash_ids[index], 'y' : self.y_train}
         train = pd.DataFrame(data)
         
-        # data = {'cluster_id' : testing_cluster_ids, 'y' : y_test}
         data = {'cluster_id' : self.all_testing_hash_ids[index], 'y' : self.y_test}
         test = pd.DataFrame(data)
         
@@ -589,22 +592,32 @@ class CategoryDiscoveryTrainer():
         # Create consistent color mapping
         cmap = plt.get_cmap('tab10')
         y_to_color = {y: cmap(i % 10) for i, y in enumerate(all_y_vals)}
-        
-        # Plot training histogram
-        self._plot_histograms(train,combine=True,y_to_color=y_to_color)
 
-        # Plot testing histogram
+
+        # === Training Plot ===
+        self._plot_histograms(train, combine=True, y_to_color=y_to_color, show=show)
+        if not show:
+            save_plot(save_dir, f"{base_filename}_hashes_train_epoch_{index}.png", subfolder="plots")
+    
+        # === Testing Plot(s) ===
         if split_testing:
             test_known = test[self.mask]
             test_unknown = test[~self.mask]
-            
-            self._plot_histograms(test_known, combine=True, y_to_color=y_to_color)
-            self._plot_histograms(test_unknown, combine=True, y_to_color=y_to_color)
-
+    
+            self._plot_histograms(test_known, combine=True, y_to_color=y_to_color, show=show)
+            if not show:
+                save_plot(save_dir, f"{base_filename}_hashes_test_known_epoch_{index}.png", subfolder="plots")
+    
+            self._plot_histograms(test_unknown, combine=True, y_to_color=y_to_color, show=show)
+            if not show:
+                save_plot(save_dir, f"{base_filename}_hashes_test_unknown_epoch_{index}.png", subfolder="plots")
         else:
-            self._plot_histograms(test,combine=True,y_to_color=y_to_color)
+            self._plot_histograms(test, combine=True, y_to_color=y_to_color, show=show)
+            if not show:
+                save_plot(save_dir, f"{base_filename}_hashes_test_epoch_{index}.png", subfolder="plots")
+                
 
-    def _plot_histograms(self,df,combine=True,y_to_color=None,all_y_vals=None):
+    def _plot_histograms(self,df,combine=True,y_to_color=None,all_y_vals=None, show=False):
 
         all_clusters = sorted(df['cluster_id'].unique())
         unique_y = sorted(df['y'].unique()) if all_y_vals is None else sorted(all_y_vals)
@@ -621,29 +634,43 @@ class CategoryDiscoveryTrainer():
             plt.figure(figsize=(8,3))
             for i, y_val in enumerate(unique_y):
                 counts = df.loc[df['y'].eq(y_val),'cluster_id'].value_counts().reindex(all_clusters, fill_value=0)
-                pmf = counts / counts.sum()
+                pmf = counts / (counts.sum()+1)
                 bar_positions = x + i * width
                 plt.bar(bar_positions, pmf, width=width, label=f'y = {y_val}', color=y_to_color.get(y_val, 'gray'))
-            
+
+            # Add vertical lines between cluster groups
+            for i in range(len(x) + 1):
+                xpos = x[0] + width * (len(unique_y) - 1) / 2 - 1/2 + i
+                plt.axvline(x=xpos, linestyle='--', color='gray', alpha=0.6, linewidth=0.8)
+
+
             plt.xlabel('cluster_id')
             plt.ylabel('Frequency')
-            plt.title('Cluster ID Value Counts by y')
+            plt.title('Cluster ID Counts by y')
+
+            # xtick_positions = x + (group_width - width) / 2
+            # plt.xticks(xtick_positions, labels=all_clusters)
+
             plt.xticks(x + width * (len(unique_y) - 1) / 2, labels=all_clusters)
-            plt.legend(title='y value')
-            plt.show()
+            plt.legend(title='System')
+            if show:
+                plt.show()
     
         
         else:
             fig, axs = plt.subplots(len(unique_y), 1, figsize=(6, 10), constrained_layout=True)
             for i, y_val in enumerate(unique_y):
                 counts = train.loc[train['y'].eq(y_val),'cluster_id'].value_counts().reindex(all_clusters, fill_value=0)
-                pmf = counts / counts.sum()
+                pmf = counts / (counts.sum()+1)
                 axs[i].bar(all_clusters, pmf, color=y_to_color.get(y_val, 'gray'))
                 axs[i].set_title(f'Histogram of cluster_ids for y = {y_val}')
                 axs[i].set_xlabel('cluster_id')
                 axs[i].set_ylabel('Frequency')
                 axs[i].set_xticks(all_clusters)
-            plt.show()
+            # for i in range(4):
+            #     axs[i].vlines(x=i+2*width,ymin=0,ymax=1,linestyles='dashed',color='gray',alpha=0.5)
+            if show:
+                plt.show()
 
 
 

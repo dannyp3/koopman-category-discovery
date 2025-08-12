@@ -1,7 +1,7 @@
 # Ignore node_modules directory
 runs/
-plots/
 data/
+experiments/
 *.ipynb_checkpoints/
 
 # Ignore all of the following files

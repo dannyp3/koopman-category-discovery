@@ -8,6 +8,8 @@ from scipy.integrate import solve_ivp
 import pickle
 from pathlib import Path
 from tqdm import tqdm
+import concurrent.futures
+
 plt.style.use('dark_background')
 
 
@@ -69,9 +71,11 @@ def create_one_dimensional_dataset(n,systems,start,end,num_series,noise_multipli
 
     return dataset
 
-    
 
-def create_three_dimensional_dataset(n,systems,start,end,num_series,noise_multiplier,seed=42,threshold=100):
+
+
+
+def create_three_dimensional_dataset_OLD(n,systems,start,end,num_series,noise_multiplier,seed=42,threshold=100):
     rng = np.random.default_rng(seed)
 
 
@@ -137,6 +141,105 @@ def create_three_dimensional_dataset(n,systems,start,end,num_series,noise_multip
     return dataset
 
 
+def solve_system(wrapped_ode, start, true_end, y0, t_eval):
+    sol = solve_ivp(wrapped_ode, [start,true_end], y0, t_eval=t_eval,
+                    rtol=1e-8, atol=1e-10, max_step=0.05)
+    return sol
+    
+
+def create_three_dimensional_dataset(n,systems,start,end,num_series,noise_multiplier,seed=42,threshold=100):
+    rng = np.random.default_rng(seed)
+
+
+    dataset = {system : [] for system in systems.keys()}
+    
+    for system, (ode, sampler) in systems.items():
+
+        if system in ['rossler','sprott_a']:
+            true_end = 2*end
+            t_eval = np.linspace(start,true_end,2*n)
+        else:
+            t_eval = np.linspace(start,end,n)
+            true_end = end
+        
+        # Make sure the dynamics don't go veyond a particular threshold
+        system_norm = threshold * 1.1
+        y = None
+        # for _ in tqdm(range(num_series), desc=f'{system}'):
+
+        num_regenerated = 0
+        with tqdm(total=num_series, desc=f"{system} system") as pbar:
+            while True:
+    
+                y0 = [rng.uniform(-2,2),
+                      rng.uniform(-2,2),
+                      rng.uniform(-2,2)]
+                    
+                params = sampler(rng)
+                
+                def wrapped_ode(t, y): return ode(t, y, **params)
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executer:
+                    future = executer.submit(solve_system, wrapped_ode, start, true_end, y0, t_eval)
+                    try:
+                        sol = future.result(timeout=15)
+                    except concurrent.futures.TimeoutError:
+                        print('Timeout error -> retrying')
+                        continue
+
+                # sol = solve_ivp(wrapped_ode, [start,true_end], y0, t_eval=t_eval,
+                #                 rtol=1e-8, atol=1e-10, max_step=0.05)
+    
+                if not sol.success:
+                    print(f'System {system} failed to solve: retrying')
+                    continue
+                
+                if system in ['rossler','sprott_a']:
+                    t = np.linspace(start,end,n)
+                    y = sol.y[:,::2]
+                else:
+                    t = sol.t
+                    y = sol.y
+    
+                if y.shape[1] != n:
+                    # print(f'System {system} returned {y.shape[1]} samples instead of {n}: retrying')
+                    num_regenerated += 1
+                    continue
+    
+                system_norm = np.linalg.norm(y, axis=0).max()
+                if system_norm > threshold:
+                    # print(f'System {system} had norm {system_norm:.2f}: regenerating')
+                    num_regenerated += 1
+                    continue
+    
+                signal_std = np.std(y, axis=1, keepdims=True)  # shape: (n_channels, 1)
+                noise_scale = noise_multiplier * signal_std # make noise 5% of the max amplitude
+                noise = rng.normal(loc=0, scale=noise_scale, size=y.shape)
+                y += noise
+                
+                record = {
+                    'params' : params,
+                    'y0' : y0,
+                    'start' : start,
+                    'end' : end,
+                    't' : t,
+                    'y' : y
+                }
+                
+                dataset[system].append(record)
+                pbar.update(1)
+    
+                if len(dataset[system]) == num_series:
+                    break  # success
+
+            pbar.close()
+            # print(f'{num_regenerated} {system} systems regenerated')
+        
+
+    return dataset
+
+
+
 
 
 ######## 1-Dimensional Systems (2nd Order) ########
@@ -158,9 +261,9 @@ def van_der_pol(t, y, mu, z, m):
     x, v = y
     return [v, mu * (1 - m*x**2) * v - z*x]
 
-def nonlinear_damped_oscillator(t, y, c, k, gamma, omega):
+def nonlinear_damped_oscillator(t, y, zeta, k, gamma, omega):
     x, v = y
-    return [v, -c*(v / np.sqrt(v**2 + 1e-3)) - k*x + gamma * np.cos(omega * x)]
+    return [v, -zeta*(v / np.sqrt(v**2 + 1e-3)) - k*x + gamma * np.cos(omega * x)]
 
 def nonlinear_spring(t, y, k, alpha, gamma, omega):
     x, v = y
@@ -213,17 +316,17 @@ def harmonic_params(rng):
     return {'omega': rng.uniform(2.0, 5.0)}
 
 def under_damped_harmonic_params(rng):
-    return {'zeta': rng.uniform(0.02, 0.25),
+    return {'zeta': rng.uniform(0.0005, 0.001), # (0.02, 0.25),
             'omega': rng.uniform(2.0, 5.0)}
 
 def spring_mass_forcing_params(rng):
-    return {'zeta': rng.uniform(0.01, 0.02),
+    return {'zeta': rng.uniform(0.0005, 0.001), # (0.01, 0.02)
             'omega': rng.uniform(2.0, 5.0),
             'gamma': rng.uniform(0.5, 1.5),
             'alpha': rng.uniform(1, 3)}
 
 def duffing_params(rng):
-    return {'zeta' : rng.uniform(0.01, 0.02),
+    return {'zeta' : rng.uniform(0.0005, 0.001), # (0.01, 0.02)
             'omega': rng.uniform(1, 3),
             'beta' : rng.uniform(2, 10),
             'gamma': rng.uniform(0.5, 1.5),
@@ -235,7 +338,7 @@ def vdp_params(rng):
             'm' : rng.uniform(4, 20)}
 
 def nonlinear_damped_params(rng):
-    return {'c': rng.uniform(0.05, 0.15),
+    return {'zeta': rng.uniform(0.0005, 0.001), # (0.05, 0.15)
             'k' : rng.uniform(4, 7),
             'gamma' : rng.uniform(0.5, 1.5),
             'omega' : rng.uniform(1, 3)}
@@ -252,17 +355,17 @@ def piecewise_linear_params(rng):
 
 def sine_pendulum_params(rng):
     return {'m' : rng.uniform(8,12),
-            'zeta' : rng.uniform(0.01, 0.02)}
+            'zeta' : rng.uniform(0.0005, 0.001)} # 0.01, 0.02
 
 def sigmoid_pendulum_params(rng):
     return {'k' : rng.uniform(8,12),
-            'zeta' : rng.uniform(0.01, 0.02), # 0.01, 0.02
+            'zeta' : rng.uniform(0.0005, 0.001), # 0.01, 0.02
             'gamma' : rng.uniform(0.5, 1.5),
             'omega' : rng.uniform(1, 3)}
 
 def arctangent_oscillator_params(rng):
     return {'k': rng.uniform(5, 10),
-            'zeta': rng.uniform(0.01, 0.03)}
+            'zeta': rng.uniform(0.0005, 0.001)} # 0.01, 0.03
 
 # Varying parameters over time
 def time_varying_harmonic_params(rng):
@@ -417,7 +520,102 @@ def second_order_chaotic_params(rng):
 
 
 
+
+
+
 # Plotting
+
+
+def plot_1d_trajectories(dataset, n_examples, dim, frac, pos):
+    for key in dataset.keys():
+    
+        curr_data = dataset[key]
+        
+        plt.figure(figsize=(16,2))
+        for i in range(n_examples):
+            x = curr_data[i]['t']
+            y = curr_data[i]['y'][dim,:].T
+
+            plotting_fraction = int(frac*len(x))
+
+            start = plotting_fraction * pos
+            end = plotting_fraction * (pos+1)
+
+            plt.plot(x[start:end],y[start:end],linewidth=1)
+    
+        plt.title(key)
+        # plt.legend(['x','v'])
+        plt.show()
+
+    
+def plot_phase_diagrams(dataset, n_examples, skip):
+    n_examples = 3                          # first N samples of each system
+    skip       = 200                         # draw an arrow every `skip` points
+    systems_enum    = list(dataset.keys())
+    rows, cols = len(systems_enum), n_examples
+    fig, axes  = plt.subplots(rows, cols,
+                              figsize=(4*cols, 3*rows),
+                              sharex='col', sharey='col')
+    fig.suptitle(f'Phase diagrams (with arrows) – first {n_examples} samples', fontsize=14)
+    
+    for r, sys in enumerate(systems_enum):
+        records = dataset[sys][:n_examples]
+    
+        for c, rec in enumerate(records):
+            x, v = rec['y']                        # position & velocity
+            ax   = axes[r, c] if rows > 1 else axes[c]
+    
+            # main trajectory line
+            ax.plot(x, v, lw=1, color='white')
+    
+            # add arrows along the trajectory
+            for j in range(0, len(x) - 1, skip):
+                ax.annotate("",
+                            xy=(x[j + 1], v[j + 1]),
+                            xytext=(x[j], v[j]),
+                            arrowprops=dict(arrowstyle="->",
+                                            color="cyan",
+                                            lw=0.8))
+    
+            # labels / titles
+            if c == 0:
+                ax.set_ylabel(sys.replace('_', ' '), fontsize=10)
+            if r == rows - 1:
+                ax.set_xlabel('x')
+            if r == 0:
+                ax.set_title(f'Sample {c + 1}')
+            ax.grid(alpha=0.3)
+    
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    plt.show()
+
+
+
+
+def plot_3d_trajectories(dataset, n_examples, frac, pos):
+    
+    for key in dataset.keys():
+    
+        curr_data = dataset[key]
+        
+        fig, ax = plt.subplots(n_examples,1,figsize=(16,n_examples*1.3))
+        for i in range(n_examples):
+            t = curr_data[i]['t']
+            x, y, z = curr_data[i]['y']
+
+            plotting_fraction = int(frac*len(x))
+
+            start = plotting_fraction * pos
+            end = plotting_fraction * (pos+1)
+            
+            ax[i].plot(t[start:end],x[start:end],linewidth=1)
+            ax[i].plot(t[start:end],y[start:end],linewidth=1)
+            ax[i].plot(t[start:end],z[start:end],linewidth=1)
+            ax[i].legend(['x','y','z'])
+    
+        plt.suptitle(f'{key.capitalize()} System')
+        plt.show()
+
 def plot_3d_time_colored_trajectories(dataset, n_examples=3, cmap=cm.plasma):
     """
     Plots 3D phase trajectories for each system in the dataset.

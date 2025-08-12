@@ -5,8 +5,12 @@ import plotly.graph_objects as go
 import seaborn as sns
 from plotly.subplots import make_subplots
 
+from pydmd import DMD
+import ot
+
 from scipy.optimize import linprog
 from scipy.spatial.distance import pdist, squareform, cdist
+from scipy.stats import wasserstein_distance
 
 from sklearn.manifold import MDS
 from sklearn.cluster import k_means
@@ -15,6 +19,19 @@ from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
 
+from kcm.dynamical_systems import create_three_dimensional_dataset
+
+from kcm.dynamical_systems import (
+    lorenz, lorenz_params,
+    rossler,rossler_params,
+    chen,chen_params,
+    chua,chua_params,
+    halvorsen,halvorsen_params,
+    sprott_a,sprott_a_params,
+    tigan,tigan_params,
+    cross_coupled,cross_coupled_params,
+)
+
 from tqdm import tqdm
 import pickle
 from datetime import datetime
@@ -22,18 +39,29 @@ from pathlib import Path
 import uuid
 import logging
 import joblib
+import json
 
+DYNAMICAL_SYSTEMS = {
+    'lorenz' : (lorenz, lorenz_params),
+    'rossler' : (rossler,rossler_params),
+    'chen' : (chen,chen_params),
+    # 'chua' : (chua,chua_params),
+    'halvorsen' : (halvorsen,halvorsen_params),
+    'sprott_a' : (sprott_a,sprott_a_params),
+    'tigan' : (tigan,tigan_params),
+    'cross_coupled' : (cross_coupled,cross_coupled_params)
+}
 
 
 class KoopmanCategoryModel:
     def __init__(self, num_cats=None, num_samples=None, system_dimension=None, data_path=None, delay_embeddings=0, num_segments=5,
                  svd_rank=None, dmd_rank=None, q=1, cluster_method='kmeans', num_clusters=None, noisy_data=True, noise_std=None, 
-                 normalize_inputs=True, run_root: str | Path | None = None, seed=None):
+                 normalize_inputs=True, train_classes=None, soft_clustering=None, tau=None, run_root: str | Path | None = None, seed=None):
 
         logger = logging.getLogger("KCM")
         
         # ---------- unique output directory ----------
-        run_root = self._repo_root() / "runs" if run_root is None else Path(run_root)
+        run_root = self._repo_root() / "experiments" if run_root is None else Path(run_root)
 
         ts   = datetime.now().strftime("%Y%m%d_%H%M%S")
         uid  = uuid.uuid4().hex[:8]                 # 8-char suffix
@@ -88,11 +116,12 @@ class KoopmanCategoryModel:
         if (self.dmd_rank > self.svd_rank) or (self.svd_rank > self.total_observables) or (self.dmd_rank > self.total_observables):
             raise ValueError(f'Should have dmd_rank < svd_rank < total_observables, but have values of {self.dmd_rank}, {self.svd_rank}, and {self.total_observables}')
 
-        if np.mod(self.n,self.num_segments) != 0:
-            raise ValueError(f'Number of segments {self.num_segments} must divide given data size {self.n-self.delay_embeddings}')
+        # print(self.n, self.num_segments, np.mod(self.n,self.num_segments))
+        # if np.mod(self.n,self.num_segments) != 0:
+        #     raise ValueError(f'Number of segments {self.num_segments} must divide given data size {self.n-self.delay_embeddings}')
         
         # Clustering Parameters
-        self.q = q
+        # self.q = q
         self.MDS_dimension = 10
         self.cluster_method = cluster_method
         self.num_clusters = num_clusters
@@ -102,6 +131,9 @@ class KoopmanCategoryModel:
         self.scaler = StandardScaler()
 
         # Category Discovery Parameters
+        self.train_classes = train_classes
+        self.soft_clustering = soft_clustering
+        self.tau = tau 
 
 
         param_details = [f'num_cats: {self.num_cats}',
@@ -114,13 +146,25 @@ class KoopmanCategoryModel:
                          f'total_observables: {self.total_observables}',
                          f'svd_rank: {self.svd_rank}',
                          f'dmd_rank: {self.dmd_rank}',
-                         f'q: {self.q}',
+                         # f'q: {self.q}',
                          f'MDS_dimension: {self.MDS_dimension}',
                          f'cluster_method: {self.cluster_method}',
-                         f'num_cluseters (k) : {self.num_clusters}']
+                         f'num_cluseters (k): {self.num_clusters}',
+                         f'noisy_data: {self.noisy_data}',
+                         f'noise_std: {self.noise_std}',
+                         f'train_classes: {self.train_classes}',
+                         f'soft_clustering: {self.soft_clustering}',
+                         f'tau: {self.tau}']
 
         joined = '\n'.join(param_details)
         self.logger.info(f"Parameters:\n{joined}")
+
+        self._save_params(param_details)
+
+
+    def _save_params(self, param_details, filename="params.json"):
+        with open(Path(self.run_dir) / filename, "w") as f:
+            json.dump(param_details, f, indent=2)
 
 
     def _load_data(self, data_path):
@@ -135,7 +179,7 @@ class KoopmanCategoryModel:
             
             file_path = self._data_path(
                 f"{self.system_dimension}-dimensional-systems",
-                f"dataset_{self.num_cats}_class_{self.num_samples}_{samples_name}.pkl"
+                f"dataset_{self.num_cats}_class_{self.num_samples}_{samples_name}_OLD.pkl"
             )
             self.data_path = file_path
             
@@ -157,12 +201,13 @@ class KoopmanCategoryModel:
         
         self.total_dmd_calculations = self.num_cats * self.num_samples * self.num_segments
         self.logger.info(f'Generating {self.total_dmd_calculations} DMD eigs/modes each with dimensionality {self.svd_rank}')
+        print(f'Generating {self.total_dmd_calculations} DMD eigs/modes each with dimensionality {self.svd_rank}')
         
         for cat in self.cats:
-        
+       
             curr_data = self.dataset[cat]
         
-            for index in range(self.num_samples):
+            for index in tqdm(range(self.num_samples), desc=f'{cat} system'):
         
                 X = curr_data[index]['y'].T
 
@@ -177,8 +222,47 @@ class KoopmanCategoryModel:
                     start_ind = sp * self.segment_length
                     end_ind = (sp + 1) * self.segment_length
                     X_split = X[start_ind:end_ind,:]
-                    
-                    eigs, modes, b = self._compute_dmd(X_split.T)
+
+                    try:
+                        eigs, modes, b = self._compute_dmd(X_split.T) # issue
+                    except:
+
+                        # regenerate data where dmd ran into issues
+                        print(f'DMD Error: {cat} system index {index} -> regenerating')
+
+                        # redefine inputs
+                        n = self.n
+                        begin = curr_data[index]['start']
+                        end = curr_data[index]['end']
+                        num_series = 500
+                        noise_multiplier = noise_std if self.noisy_data else 0 # 0, 0.01, 0.05
+                        seed = self.seed
+                        new_systems = {
+                            cat : DYNAMICAL_SYSTEMS[cat],
+                        }
+
+                        # generate system
+                        updated_sample = create_three_dimensional_dataset(self.n,
+                                                                          new_systems,
+                                                                          begin,
+                                                                          end,
+                                                                          1,
+                                                                          noise_multiplier,
+                                                                          self.seed)
+
+                        # replace system in self.dataset
+                        self.dataset[cat][index] = updated_sample[cat][0]
+                        curr_data = self.dataset[cat]
+                        X = curr_data[index]['y'].T
+
+                        # reformat X data
+                        if self.normalize_inputs:
+                            X = (X - X.mean(axis=0)) / X.std(axis=0)
+                        
+                        if self.delay_embeddings > 0:
+                            X = np.hstack([X[i:self.n-self.delay_embeddings+i,:] for i in range(self.delay_embeddings+1)])
+
+                        
                     all_eigs.append(eigs)
                     all_modes.append(modes)
                     all_amps.append(b)
@@ -203,7 +287,7 @@ class KoopmanCategoryModel:
         imag_eigs = []
         full_modes = []
         
-        for i in range(len(self.all_eigs)):
+        for i in tqdm(range(len(self.all_eigs)), desc='Formatting DMD data'):
             eigs = self.all_eigs[i]
             modes = self.all_modes[i]
             
@@ -317,6 +401,10 @@ class KoopmanCategoryModel:
 
         if len(self.df_sample) < self.codebook_training_size:
             print(f'Reducing codebook size from {self.codebook_training_size} to {len(self.df_sample)} based on codebook_training_size // <number of training classes> // num_segments')
+            self.codebook_training_size = self.df_sample.shape[0]
+
+        if np.mod(self.codebook_training_size, self.train_classes) != 0:
+            ValueError(f'Codebook training size ({self.codebook_training_size}) must divide number of training classes ({len(self.train_classes)})')
         
         self.logger.info(f'Codebook training size: {self.codebook_training_size}')
 
@@ -330,29 +418,41 @@ class KoopmanCategoryModel:
         else:
             self.codebook_training_size = codebook_training_size
 
+
         # Check if df_train and df_test have been added to the instance
         assert hasattr(self, 'df_train') and hasattr(self, 'df_test'), 'Model has not train/test split yet'
 
         # Create a sample from the training data for creating the codebook
-        if not hasattr(self, 'df_sample'):
-            print('Creating df_sample for codebook')
-            
-            if category_discovery:
-                self.train_classes = train_classes
-                class_size = self.codebook_training_size // len(self.train_classes) // self.num_segments
-            else:
-                class_size = self.codebook_training_size // self.num_cats // self.num_segments
-
-            # Take an identically sized sample from each target class for the codebook
-            samples_to_keep = (self.df_train[['target','sample']]
-                .drop_duplicates()
-                .groupby('target')
-                .apply(lambda g: g.sample(class_size, random_state=self.seed, replace=False))
-                .reset_index(drop=True)
-            )
-            self.df_sample = self.df.merge(samples_to_keep, on=["target", "sample"], how="inner")
-
+        # if not hasattr(self, 'df_sample'):
+        print('Creating df_sample for codebook')
         
+        if category_discovery:
+            # self.train_classes = train_classes
+            self.logger.info(f'Train Classes: {self.train_classes}')
+            # class_size = self.codebook_training_size // len(self.train_classes) // self.num_segments
+            class_size = self.codebook_training_size // len(self.train_classes)
+        else:
+            # class_size = self.codebook_training_size // self.num_cats // self.num_segments
+            class_size = self.codebook_training_size // self.num_cats
+
+        if np.mod(self.codebook_training_size, len(self.train_classes)) != 0:
+            ValueError(f'Codebook training size ({self.codebook_training_size}) must divide number of training classes ({len(self.train_classes)})')
+
+        # Take an identically sized sample from each target class for the codebook
+        # samples_to_keep = (self.df_train[['target','sample']]
+        #     .drop_duplicates()
+        #     .groupby('target')
+        #     .apply(lambda g: g.sample(class_size, random_state=self.seed, replace=False))
+        #     .reset_index(drop=True)
+        # )
+        # self.df_sample = self.df.merge(samples_to_keep, on=["target", "sample"], how="inner")
+        samples_to_keep = (self.df_train[['target','sample','segment']]
+            .groupby('target')
+            .apply(lambda g: g.sample(class_size, random_state=self.seed, replace=False))
+            .reset_index(drop=True)
+        )
+        self.df_sample = self.df.merge(samples_to_keep, on=["target","sample","segment"], how="inner")
+
         # Create Wasserstein Distance Matrix from downsampled training points
         metric_matrix = self._create_metric_matrix(self.df_sample)
 
@@ -392,16 +492,19 @@ class KoopmanCategoryModel:
         # Compare percent change in labels from using surrogate cluster centers
         tol = 1e-8
         num_changed = np.sum(abs(self.sample_label - label) >= tol)
-        self.logger.info(f'{num_changed}/{self.df_sample.shape[0]} labels changed ({round(num_changed/self.df_sample.shape[0] * 100,2)}%) when choosing training points as cluster centers')
+        # self.logger.info(f'{num_changed}/{self.df_sample.shape[0]} labels changed ({round(num_changed/self.df_sample.shape[0] * 100,2)}%) when choosing training points as cluster centers')
 
     
         # Represent training and testing datasets with codebook
         self.train_metric_matrix = self._create_metric_matrix(self.codebook,self.df_train)
         self.test_metric_matrix = self._create_metric_matrix(self.codebook,self.df_test)
 
-        # Assign training samples to clusters
+
+        # Assign training samples to clusters for plotting
         train_label = np.argmin(self.train_metric_matrix,axis=0)
         self.df_train['cluster'] = train_label
+        test_label = np.argmin(self.test_metric_matrix,axis=0)
+        self.df_test['cluster'] = test_label
         
         
         all_clusters = sorted(self.df_train['cluster'].unique())
@@ -432,9 +535,40 @@ class KoopmanCategoryModel:
             self.plot_MDS(color_by_target=False)
 
 
+    def create_feature_outputs(self, soft_clustering=None, tau=None):
+
+        if tau is not None:
+            self.tau = tau
+
+        if soft_clustering is not None:
+            self.soft_clustering = soft_clustering
+        
+        self.logger.info(f'soft_clustering: {self.soft_clustering}')
+        self.logger.info(f'tau: {self.tau}')
+
+        def _calculate_features(metric_matrix, tau):
+
+            soft_weights = np.exp(-metric_matrix / tau)  # shape: (num_clusters, total_segments)
+            soft_weights /= soft_weights.sum(axis=0, keepdims=True)  # normalize over clusters per segment
+            
+            # 2. Reshape to (num_clusters, num_samples, num_segments)
+            soft_weights = soft_weights.reshape(self.num_clusters, -1, self.num_segments)
+            
+            # 3. Average over segments to get (num_samples, num_clusters)
+            soft_histograms = soft_weights.mean(axis=2).T  # Final shape: (num_samples, num_clusters)
+
+            # # hard clustering - same as the c_matrix
+            # hard_weights = np.argmin(KCM.train_metric_matrix, axis=0)
+            # hard_weights = (np.repeat(hard_weights[np.newaxis,:],num_clusters,axis=0) == np.arange(num_clusters)[:,np.newaxis]) * np.ones(num_clusters)[:,np.newaxis]
+            # hard_weights = hard_weights.reshape(num_clusters, -1, num_segments)
+            # hard_histograms = hard_weights.mean(axis=2).T
+
+            return soft_histograms
+            
 
 
-        # Create histogram data
+
+        # Create histogram data (hard targets)
         self.training_histograms, self.c_train_matrix, self.train_target = self._compute_cluster_histograms(self.df_train,self.train_metric_matrix)
         self.testing_histograms, self.c_test_matrix, self.test_target = self._compute_cluster_histograms(self.df_test,self.test_metric_matrix)
         
@@ -445,32 +579,25 @@ class KoopmanCategoryModel:
         self.inv_c_test_matrix = self.c_test_matrix * np.log(self.N / self.N_ks)
 
 
-        # # Identify number of samples from each system category in both training and testing samples
-        # self.num_train_samples = int(len(self.df_train.groupby(['target','sample']).groups) / self.num_cats)
-        # self.num_test_samples = int(len(self.df_test.groupby(['target','sample']).groups) / self.num_cats)
-        
-        # # Create cluster assignments for each segment in training and testing set
-        # self.train_cluster_assignments = np.argmin(self.train_metric_matrix,axis=0).reshape(self.num_cats,self.num_train_samples,self.num_segments)
-        # self.test_cluster_assignments = np.argmin(self.test_metric_matrix,axis=0).reshape(self.num_cats,self.num_test_samples,self.num_segments)
-        
-        # # Count number of each cluster assignment in training set
-        # self.N_ks = np.array([(np.sum(self.train_cluster_assignments == i,axis=2) > 0).ravel().sum() for i in range(self.num_clusters)])
-        # self.N = self.df_train.shape[0] # Total number of time series samples
-        
-        # # Create histogram of cluster assignments for training data
-        # self.n_train_matrix = np.concatenate([np.sum(self.train_cluster_assignments == i,axis=2).ravel() for i in range(self.num_clusters)]).reshape(self.num_clusters,self.num_cats*self.num_train_samples).T
-        # self.c_train_matrix = self.n_train_matrix / self.num_segments
-        # self.inv_c_train_matrix = self.c_train_matrix * np.log(self.N / self.N_ks)
-        
-        # # Create histogram of cluster assignments for testing data
-        # self.n_test_matrix = np.concatenate([np.sum(self.test_cluster_assignments == i,axis=2).ravel() for i in range(self.num_clusters)]).reshape(self.num_clusters,self.num_cats*self.num_test_samples).T
-        # self.c_test_matrix = self.n_test_matrix / self.num_segments
-        # self.inv_c_test_matrix = self.c_test_matrix * np.log(self.N / self.N_ks)
+        # Soft targets
+        self.soft_train_hist = _calculate_features(self.train_metric_matrix, self.tau)
+        self.soft_test_hist = _calculate_features(self.test_metric_matrix, self.tau)
 
-        # # Extract target assignments (classification labels)
-        # self.train_target = self.df_train['target'].values[-self.num_segments::-self.num_segments][-1::-1]
-        # self.test_target = self.df_test['target'].values[-self.num_segments::-self.num_segments][-1::-1]
-        
+
+        # self.y_train = self.train_target.values
+        # self.y_test = self.test_target.values
+
+        if self.soft_clustering:
+            self.train_data = np.hstack((self.soft_train_hist, self.train_target.values[:,np.newaxis]))
+            self.test_data = np.hstack((self.soft_test_hist, self.test_target.values[:,np.newaxis]))
+            # self.X_train = self.soft_train_hist
+            # self.X_test = self.soft_test_hist
+        else:
+            self.train_data = np.hstack((self.inv_c_train_matrix, self.train_target.values[:,np.newaxis]))
+            self.test_data = np.hstack((self.inv_c_test_matrix, self.test_target.values[:,np.newaxis]))
+            # self.X_train = self.inv_c_train_matrix
+            # self.X_test = self.inv_c_test_matrix
+            
 
     def perform_classification(self, classifier=None, return_statement=False):
         """
@@ -554,42 +681,56 @@ class KoopmanCategoryModel:
 
 
 
-    def _compute_dmd(self, X_full):
+    def _compute_dmd(self, X_full, manual='true'):
         """
         Compute DMD Eigenvalues, Modes, and Amplitudes using numpy matrix operations
         """
+        
+        # !!! norms modes already and so the wasserstein metric will not make sense !!! #
+        if manual == 'false':
+            
+            dmd = DMD(svd_rank=self.svd_rank)
+            dmd.fit(X_full)
+            eigs = dmd.eigs
+            modes = dmd.modes
+            b = dmd.amplitudes
+            
+            return eigs, modes, b
+            
 
-        m, n = X_full.shape
-    
-        if self.svd_rank < 0 or self.svd_rank > m:
-            raise ValueError(f'Given svd rank is {self.svd_rank} yet data given only has dimension {m}')
+        elif manual == 'true':
+            
+            m, n = X_full.shape
         
-        X = X_full[:,:-1]
-        Y = X_full[:,1:]
+            if self.svd_rank < 0 or self.svd_rank > m:
+                raise ValueError(f'Given svd rank is {self.svd_rank} yet data given only has dimension {m}')
+            
+            X = X_full[:,:-1]
+            Y = X_full[:,1:]
+            
+            # SVD of X
+            U, s, Vh = np.linalg.svd(X, full_matrices=False)
+            
+            # r rank of svd of X
+            U_r = U[:,:self.svd_rank]
+            s_r = s[:self.svd_rank]
+            Vh_r = Vh[:self.svd_rank,:]
+            
+            # Calculate A_tilde
+            U_r_star = U_r.conj().T
+            V_r = Vh_r.conj().T
+            S_r_inv = np.diag(1.0 / s_r)
+            
+            A_tilde = U_r_star @ Y @ V_r @ S_r_inv
+            
+            # Eigendecomposition of A_tilde
+            eigs, W = np.linalg.eig(A_tilde)
+            
+            # Koopman Modes & amplitudes
+            modes = Y @ V_r @ S_r_inv @ W
+            b, _, _, _ = np.linalg.lstsq(modes,X[:,0])
         
-        # SVD of X
-        U, s, Vh = np.linalg.svd(X, full_matrices=False)
-        
-        # r rank of svd of X
-        U_r = U[:,:self.svd_rank]
-        s_r = s[:self.svd_rank]
-        Vh_r = Vh[:self.svd_rank,:]
-        
-        # Calculate A_tilde
-        U_r_star = U_r.conj().T
-        V_r = Vh_r.conj().T
-        S_r_inv = np.diag(1.0 / s_r)
-        
-        A_tilde = U_r_star @ Y @ V_r @ S_r_inv
-        
-        # Eigendecomposition of A_tilde
-        eigs, W = np.linalg.eig(A_tilde)
-        
-        # Koopman Modes & amplitudes
-        modes = Y @ V_r @ S_r_inv @ W
-        b, _, _, _ = np.linalg.lstsq(modes,X[:,0])
-    
-        return eigs, modes, b
+            return eigs, modes, b
 
 
     def _create_metric_matrix(self, df1, df2=None, plot_matrix=False):
@@ -622,23 +763,47 @@ class KoopmanCategoryModel:
         df1.reset_index(drop=True,inplace=True)
         df2.reset_index(drop=True,inplace=True)
 
-        for i in tqdm(df1.index, desc=metric_statement):
-            
-            # Only include half of computations if square matrix
-            df2_indices = range(i) if square_matrix else df2.index
-            
-            for j in df2_indices:
-        
-                # Eigenvalues
-                l1 = df1.loc[i,eig_columns].values[:,np.newaxis]
-                l2 = df2.loc[j,eig_columns].values[:,np.newaxis]
+        # total_metric_calculations
+        with tqdm(total=total_metric_calculations, desc=metric_statement) as pbar:
+            for i in df1.index:
                 
-                # Mass vectors (normed modes)
-                m1 = df1.loc[i,norm_mode_columns].values.real
-                m2 = df2.loc[j,norm_mode_columns].values.real
-        
-                # Compute Wasserstein Metric
-                metric_matrix[i,j] = self._compute_wasserstein_metric(l1,l2,m1,m2)
+                # Only include half of computations if square matrix
+                df2_indices = range(i) if square_matrix else df2.index
+                
+                for j in df2_indices:
+            
+                    # # Eigenvalues
+                    # l1 = df1.loc[i,eig_columns].values[:,np.newaxis]
+                    # l2 = df2.loc[j,eig_columns].values[:,np.newaxis]
+
+                    # Consider filtering eigenvalue/modes pairs based on their contribution effect
+                    
+                    # Mass vectors (normed modes)
+                    m1 = df1.loc[i,norm_mode_columns].values.real
+                    m2 = df2.loc[j,norm_mode_columns].values.real
+
+                    l1_complex = df1.loc[i, eig_columns].values
+                    l2_complex = df2.loc[j, eig_columns].values
+                    
+                    l1 = np.stack([l1_complex.real, l1_complex.imag], axis=1)  # shape: (self.num_observables, 2)
+                    l2 = np.stack([l2_complex.real, l2_complex.imag], axis=1)
+                    
+            
+                    # Compute Wasserstein Metric
+                    # metric_matrix[i,j] = self._compute_wasserstein_metric(l1,l2,m1,m2)
+                    # metric_matrix[i,j] = wasserstein_distance(u_values=l1.ravel(), v_values=l2.ravel(), u_weights=m1, v_weights=m2)
+                    C = ot.dist(l1, l2, metric='euclidean')
+                    m1 = np.ascontiguousarray(m1, dtype=np.float64)
+                    m2 = np.ascontiguousarray(m2, dtype=np.float64)
+                    C = np.ascontiguousarray(C, dtype=np.float64)
+
+
+
+
+                    metric_matrix[i,j] = ot.emd2(m1, m2, C)
+                    
+
+                    pbar.update(1)
 
         if square_matrix:
             i_triu = np.triu_indices_from(metric_matrix, k=1)
