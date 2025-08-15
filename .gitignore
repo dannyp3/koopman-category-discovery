@@ -2,7 +2,9 @@
 runs/
 data/
 experiments/
+backup_experiments/
 *.ipynb_checkpoints/
+*__pycache__/
 
 # Ignore all of the following files
 *.log

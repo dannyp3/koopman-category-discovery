@@ -14,7 +14,6 @@ from scipy.stats import wasserstein_distance
 
 from sklearn.manifold import MDS
 from sklearn.cluster import k_means
-from sklearn.metrics import accuracy_score
 from sklearn.metrics import confusion_matrix
 from sklearn.model_selection import StratifiedGroupKFold
 from sklearn.preprocessing import StandardScaler
@@ -30,8 +29,20 @@ from kcm.dynamical_systems import (
     sprott_a,sprott_a_params,
     tigan,tigan_params,
     cross_coupled,cross_coupled_params,
+    harmonic_oscillator, harmonic_params,
+    sm_damper_forcing, spring_mass_forcing_params,
+    duffing_oscillator, duffing_params,
+    van_der_pol, vdp_params,
+    nonlinear_damped_oscillator, nonlinear_damped_params,
+    nonlinear_spring, nonlinear_spring_params,
+    piecewise_linear_oscillator, piecewise_linear_params,
+    sine_pendulum, sine_pendulum_params,
+    sigmoid_pendulum, sigmoid_pendulum_params,
+    arctangent_oscillator, arctangent_oscillator_params
 )
 
+from geomloss import SamplesLoss
+import torch
 from tqdm import tqdm
 import pickle
 from datetime import datetime
@@ -40,6 +51,8 @@ import uuid
 import logging
 import joblib
 import json
+from joblib import Parallel, delayed
+
 
 DYNAMICAL_SYSTEMS = {
     'lorenz' : (lorenz, lorenz_params),
@@ -49,14 +62,24 @@ DYNAMICAL_SYSTEMS = {
     'halvorsen' : (halvorsen,halvorsen_params),
     'sprott_a' : (sprott_a,sprott_a_params),
     'tigan' : (tigan,tigan_params),
-    'cross_coupled' : (cross_coupled,cross_coupled_params)
+    'cross_coupled' : (cross_coupled,cross_coupled_params),
+    'harmonic_oscillator' : (harmonic_oscillator, harmonic_params),
+    'spring_mass_with_forcing' : (sm_damper_forcing, spring_mass_forcing_params),
+    'duffing_oscillator' : (duffing_oscillator, duffing_params),
+    'van_der_pol_oscillator' : (van_der_pol, vdp_params),
+    'nonlinear_damped_oscillator' : (nonlinear_damped_oscillator, nonlinear_damped_params),
+    'nonlinear_spring' : (nonlinear_spring, nonlinear_spring_params),
+    'piecewise_linear_oscillator' : (piecewise_linear_oscillator, piecewise_linear_params),
+    'sine_pendulum' : (sine_pendulum, sine_pendulum_params),
+    'sigmoid_pendulum' : (sigmoid_pendulum, sigmoid_pendulum_params),
+    'arctangent_oscillator' : (arctangent_oscillator, arctangent_oscillator_params),
 }
 
 
 class KoopmanCategoryModel:
     def __init__(self, num_cats=None, num_samples=None, system_dimension=None, data_path=None, delay_embeddings=0, num_segments=5,
                  svd_rank=None, dmd_rank=None, q=1, cluster_method='kmeans', num_clusters=None, noisy_data=True, noise_std=None, 
-                 normalize_inputs=True, train_classes=None, soft_clustering=None, tau=None, run_root: str | Path | None = None, seed=None):
+                 normalize_inputs=True, train_classes=None, soft_clustering=None, tau=None, run_root: str | Path | None = None, seed=None, use_gpu=False):
 
         logger = logging.getLogger("KCM")
         
@@ -126,6 +149,7 @@ class KoopmanCategoryModel:
         self.cluster_method = cluster_method
         self.num_clusters = num_clusters
         self.labels = None
+        self.use_gpu = use_gpu
         
         # Classification Parameters
         self.scaler = StandardScaler()
@@ -208,6 +232,8 @@ class KoopmanCategoryModel:
             curr_data = self.dataset[cat]
         
             for index in tqdm(range(self.num_samples), desc=f'{cat} system'):
+
+                skipping = False # don't skip if DMD runs successfully
         
                 X = curr_data[index]['y'].T
 
@@ -216,7 +242,12 @@ class KoopmanCategoryModel:
                 
                 if self.delay_embeddings > 0:
                     X = np.hstack([X[i:self.n-self.delay_embeddings+i,:] for i in range(self.delay_embeddings+1)])
-                
+
+                sample_eigs = []
+                sample_modes = []
+                sample_amps = []
+                sample_data = []
+
                 # DMD
                 for sp in range(self.num_segments):
                     start_ind = sp * self.segment_length
@@ -224,49 +255,40 @@ class KoopmanCategoryModel:
                     X_split = X[start_ind:end_ind,:]
 
                     try:
-                        eigs, modes, b = self._compute_dmd(X_split.T) # issue
+                        eigs, modes, b = self._compute_dmd(X_split.T)
+                        
+                        # check if any of the eigenvalues for this segment are astronomically high
+                        if (np.abs(eigs) > 5).any():
+                            skipping = True
+                            issue = 'high eigenvalue detected'
+
+                            # regenerate when eigenvalues are too high
+                            sample_eigs, sample_modes, sample_amps, sample_data = self._regenerate_system_sample(curr_data[index], index, cat)
+
+                        else:
+                            sample_eigs.append(eigs)
+                            sample_modes.append(modes)
+                            sample_amps.append(b)
+                            sample_data.append(X_split)
+
+                        
+
+                    # if there's an issue with the dmd computation, recreate a sample
                     except:
+                        skipping = True
+                        issue = 'DMD computational failure'
 
                         # regenerate data where dmd ran into issues
-                        print(f'DMD Error: {cat} system index {index} -> regenerating')
+                        sample_eigs, sample_modes, sample_amps, sample_data = self._regenerate_system_sample(curr_data[index], index, cat)
 
-                        # redefine inputs
-                        n = self.n
-                        begin = curr_data[index]['start']
-                        end = curr_data[index]['end']
-                        num_series = 500
-                        noise_multiplier = noise_std if self.noisy_data else 0 # 0, 0.01, 0.05
-                        seed = self.seed
-                        new_systems = {
-                            cat : DYNAMICAL_SYSTEMS[cat],
-                        }
+                    if skipping:
+                        print(f'Regenerated sample for {cat} system index {index} from {issue}')
+                        break
 
-                        # generate system
-                        updated_sample = create_three_dimensional_dataset(self.n,
-                                                                          new_systems,
-                                                                          begin,
-                                                                          end,
-                                                                          1,
-                                                                          noise_multiplier,
-                                                                          self.seed)
-
-                        # replace system in self.dataset
-                        self.dataset[cat][index] = updated_sample[cat][0]
-                        curr_data = self.dataset[cat]
-                        X = curr_data[index]['y'].T
-
-                        # reformat X data
-                        if self.normalize_inputs:
-                            X = (X - X.mean(axis=0)) / X.std(axis=0)
-                        
-                        if self.delay_embeddings > 0:
-                            X = np.hstack([X[i:self.n-self.delay_embeddings+i,:] for i in range(self.delay_embeddings+1)])
-
-                        
-                    all_eigs.append(eigs)
-                    all_modes.append(modes)
-                    all_amps.append(b)
-                    all_data.append(X_split)
+                all_eigs.extend(sample_eigs)
+                all_modes.extend(sample_modes)
+                all_amps.extend(sample_amps)
+                all_data.extend(sample_data)
 
         self.all_eigs = all_eigs
         self.all_modes = all_modes
@@ -439,19 +461,16 @@ class KoopmanCategoryModel:
             ValueError(f'Codebook training size ({self.codebook_training_size}) must divide number of training classes ({len(self.train_classes)})')
 
         # Take an identically sized sample from each target class for the codebook
-        # samples_to_keep = (self.df_train[['target','sample']]
-        #     .drop_duplicates()
-        #     .groupby('target')
-        #     .apply(lambda g: g.sample(class_size, random_state=self.seed, replace=False))
-        #     .reset_index(drop=True)
-        # )
-        # self.df_sample = self.df.merge(samples_to_keep, on=["target", "sample"], how="inner")
         samples_to_keep = (self.df_train[['target','sample','segment']]
             .groupby('target')
             .apply(lambda g: g.sample(class_size, random_state=self.seed, replace=False))
             .reset_index(drop=True)
         )
         self.df_sample = self.df.merge(samples_to_keep, on=["target","sample","segment"], how="inner")
+
+        if len(self.df_sample) < self.codebook_training_size:
+            print(f'Reducing codebook size from {self.codebook_training_size} to {len(self.df_sample)}')
+            self.codebook_training_size = self.df_sample.shape[0]
 
         # Create Wasserstein Distance Matrix from downsampled training points
         metric_matrix = self._create_metric_matrix(self.df_sample)
@@ -680,6 +699,77 @@ class KoopmanCategoryModel:
         return self._repo_root() / "data" / Path(*parts)
 
 
+# _regenerate_system_sample(curr_data[index], index, cat)
+    def _regenerate_system_sample(self, record, index, cat):
+
+        # Regenerate a sample from the dynamical system
+        while True:
+
+            sample_eigs = []
+            sample_modes = []
+            sample_amps = []
+            sample_data = []
+
+            # redefine inputs
+            begin = record['start']
+            end = record['end']
+            noise_multiplier = self.noise_std if self.noisy_data else 0 # 0, 0.01, 0.05
+            new_systems = {
+                cat : DYNAMICAL_SYSTEMS[cat],
+            }
+
+            # generate system
+            updated_sample = create_three_dimensional_dataset(self.n,
+                                                                new_systems,
+                                                                begin,
+                                                                end,
+                                                                1,
+                                                                noise_multiplier,
+                                                                self.seed)
+
+            # replace system in self.dataset
+            self.dataset[cat][index] = updated_sample[cat][0]
+            curr_data = self.dataset[cat]
+            X = curr_data[index]['y'].T
+
+            # reformat X data
+            if self.normalize_inputs:
+                X = (X - X.mean(axis=0)) / X.std(axis=0)
+            
+            if self.delay_embeddings > 0:
+                X = np.hstack([X[i:self.n-self.delay_embeddings+i,:] for i in range(self.delay_embeddings+1)])
+
+            for sp in range(self.num_segments):
+                start_ind = sp * self.segment_length
+                end_ind = (sp + 1) * self.segment_length
+                X_split = X[start_ind:end_ind,:]
+                try:
+                    eigs, modes, b = self._compute_dmd(X_split.T)
+
+                    # check if any of the eigenvalues for this segment are astronomically high
+                    if (np.abs(eigs) > 5).any():
+                        issue = 'high eigenvalue detected'
+
+                        # regenerate when eigenvalues are too high
+                        sample_eigs, sample_modes, sample_amps, sample_data = self._regenerate_system_sample(curr_data[index], index, cat)
+
+                    else:
+                        sample_eigs.append(eigs)
+                        sample_modes.append(modes)
+                        sample_amps.append(b)
+                        sample_data.append(X_split)
+
+                except:
+                    issue = 'DMD computational failure'
+                    print(f'Regenerated sample for {cat} system index {index} from {issue}')
+                    break
+
+            break
+
+        return sample_eigs, sample_modes, sample_amps, sample_data
+
+
+
 
     def _compute_dmd(self, X_full, manual='true'):
         """
@@ -763,48 +853,123 @@ class KoopmanCategoryModel:
         df1.reset_index(drop=True,inplace=True)
         df2.reset_index(drop=True,inplace=True)
 
+        
+        # def compute_row(i):
+        #     row = np.zeros(dim2)
+        #     l1_complex = df1.loc[i, eig_columns].values
+        #     m1 = df1.loc[i, norm_mode_columns].values.real
+        #     l1 = np.stack([l1_complex.real, l1_complex.imag], axis=1)
+        #     m1 = np.ascontiguousarray(m1, dtype=np.float64)
+        
+        #     for j in (range(i) if square_matrix else df2.index):
+        #         l2_complex = df2.loc[j, eig_columns].values
+        #         m2 = df2.loc[j, norm_mode_columns].values.real
+        #         l2 = np.stack([l2_complex.real, l2_complex.imag], axis=1)
+        #         C = np.ascontiguousarray(ot.dist(l1, l2, metric='euclidean'), dtype=np.float64)
+        #         m2 = np.ascontiguousarray(m2, dtype=np.float64)
+        
+        #         dist = ot.sinkhorn2(m1, m2, C, reg=1e-2)
+        #         row[j] = dist
+        #     return i, row
+
+
+        # results = Parallel(n_jobs=-1)(delayed(compute_row)(i) for i in tqdm(df1.index, desc=metric_statement))
+
+        # # Reconstruct the matrix
+        # for i, row in results:
+        #     metric_matrix[i, :] = row
+
+
+        if self.use_gpu:
+
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            print(f'Attempting to use GPU: {device}\n')
+            
+            # loss_fn = SamplesLoss(loss="sinkhorn", p=2, blur=0.01)
+            loss_fn = SamplesLoss("sinkhorn", p=2, blur=0.05, scaling=0.9, backend="tensorized")
+
+            # === 1. Extract and format eigs/mode norms from df1 and df2 ===
+            def df_to_eigs_and_weights(df):
+                eigs = []
+                weights = []
+                for i in df.index:
+                    l_complex = df.loc[i, eig_columns].values
+                    m = df.loc[i, norm_mode_columns].values.real
+                    l = np.stack([l_complex.real, l_complex.imag], axis=1)
+                    eigs.append(l)
+                    weights.append(m / m.sum())  # normalize weights
+                return np.array(eigs), np.array(weights)
+
+                
+            eigs1_np, weights1_np = df_to_eigs_and_weights(df1)
+            eigs2_np, weights2_np = (eigs1_np, weights1_np) if square_matrix else df_to_eigs_and_weights(df2)
+
+            # Convert to torch tensors on GPU
+            X1 = torch.tensor(eigs1_np, dtype=torch.float32, device=device)  # (dim1, N, 2)
+            W1 = torch.tensor(weights1_np, dtype=torch.float32, device=device)
+            
+            X2 = X1 if square_matrix else torch.tensor(eigs2_np, dtype=torch.float32, device=device)
+            W2 = W1 if square_matrix else torch.tensor(weights2_np, dtype=torch.float32, device=device)
+
+            # === 2. Compute distance matrix ===
+            metric_matrix = torch.zeros((dim1, dim2), device=device)
+
+            with tqdm(total=total_metric_calculations, desc=metric_statement) as pbar:
+                for i in range(dim1):
+                    # limit j range for square dmatrix case
+                    j_range = range(i) if square_matrix else range(dim2)
+                    for j in j_range:
+                        x_1 = X1[i].unsqueeze(0)
+                        w_1 = W1[i].unsqueeze(0)
+                        x_2 = X2[j].unsqueeze(0)
+                        w_2 = W2[j].unsqueeze(0)
+                        dist = loss_fn(x_1, w_1, x_2, w_2)
+                        # dist = loss_fn(X1[i], W1[i], X2[j], W2[j])
+                        metric_matrix[i, j] = dist
+                        if square_matrix:
+                            metric_matrix[j, i] = dist  # fill symmetric value
+                        pbar.update(1)
+            
+            # Move back to CPU for downstream use
+            metric_matrix = metric_matrix.cpu().numpy()
+
+
+
+        else:
         # total_metric_calculations
-        with tqdm(total=total_metric_calculations, desc=metric_statement) as pbar:
-            for i in df1.index:
+            with tqdm(total=total_metric_calculations, desc=metric_statement) as pbar:
+                for i in df1.index:
+                    
+                    # Only include half of computations if square matrix
+                    df2_indices = range(i) if square_matrix else df2.index
+                    
+                    for j in df2_indices:
+
+                        # Mass vectors (normed modes)
+                        m1 = df1.loc[i,norm_mode_columns].values.real
+                        m2 = df2.loc[j,norm_mode_columns].values.real
+
+                        # Eigenvalues
+                        l1_complex = df1.loc[i, eig_columns].values
+                        l2_complex = df2.loc[j, eig_columns].values
+                        
+                        l1 = np.stack([l1_complex.real, l1_complex.imag], axis=1)  # shape: (self.num_observables, 2)
+                        l2 = np.stack([l2_complex.real, l2_complex.imag], axis=1)
+                        
                 
-                # Only include half of computations if square matrix
-                df2_indices = range(i) if square_matrix else df2.index
-                
-                for j in df2_indices:
-            
-                    # # Eigenvalues
-                    # l1 = df1.loc[i,eig_columns].values[:,np.newaxis]
-                    # l2 = df2.loc[j,eig_columns].values[:,np.newaxis]
+                        # Compute Wasserstein Metric
+                        # metric_matrix[i,j] = self._compute_wasserstein_metric(l1,l2,m1,m2)
+                        # metric_matrix[i,j] = wasserstein_distance(u_values=l1.ravel(), v_values=l2.ravel(), u_weights=m1, v_weights=m2)
+                        C = ot.dist(l1, l2, metric='euclidean')
+                        m1 = np.ascontiguousarray(m1, dtype=np.float64)
+                        m2 = np.ascontiguousarray(m2, dtype=np.float64)
+                        C = np.ascontiguousarray(C, dtype=np.float64)
+    
+                        metric_matrix[i,j] = ot.emd2(m1, m2, C)
+                        
+                        pbar.update(1)
 
-                    # Consider filtering eigenvalue/modes pairs based on their contribution effect
-                    
-                    # Mass vectors (normed modes)
-                    m1 = df1.loc[i,norm_mode_columns].values.real
-                    m2 = df2.loc[j,norm_mode_columns].values.real
-
-                    l1_complex = df1.loc[i, eig_columns].values
-                    l2_complex = df2.loc[j, eig_columns].values
-                    
-                    l1 = np.stack([l1_complex.real, l1_complex.imag], axis=1)  # shape: (self.num_observables, 2)
-                    l2 = np.stack([l2_complex.real, l2_complex.imag], axis=1)
-                    
-            
-                    # Compute Wasserstein Metric
-                    # metric_matrix[i,j] = self._compute_wasserstein_metric(l1,l2,m1,m2)
-                    # metric_matrix[i,j] = wasserstein_distance(u_values=l1.ravel(), v_values=l2.ravel(), u_weights=m1, v_weights=m2)
-                    C = ot.dist(l1, l2, metric='euclidean')
-                    m1 = np.ascontiguousarray(m1, dtype=np.float64)
-                    m2 = np.ascontiguousarray(m2, dtype=np.float64)
-                    C = np.ascontiguousarray(C, dtype=np.float64)
-
-
-
-
-                    metric_matrix[i,j] = ot.emd2(m1, m2, C)
-                    
-
-                    pbar.update(1)
-
+        
         if square_matrix:
             i_triu = np.triu_indices_from(metric_matrix, k=1)
             metric_matrix[i_triu] = metric_matrix.T[i_triu]

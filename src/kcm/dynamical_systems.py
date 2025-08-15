@@ -521,8 +521,6 @@ def second_order_chaotic_params(rng):
 
 
 
-
-
 # Plotting
 
 
@@ -531,7 +529,7 @@ def plot_1d_trajectories(dataset, n_examples, dim, frac, pos):
     
         curr_data = dataset[key]
         
-        plt.figure(figsize=(16,2))
+        plt.figure(figsize=(3,2))
         for i in range(n_examples):
             x = curr_data[i]['t']
             y = curr_data[i]['y'][dim,:].T

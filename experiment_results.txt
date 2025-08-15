@@ -1,0 +1,119 @@
+####### Koopman Constants #######
+test_size = 0.2
+category_discovery=True
+normalize_kcm_inputs=True
+soft_clustering=True
+tau = 0.1
+
+####### Basic Constants #######
+drop_na = True
+normalize_basic_inputs = False
+
+
+####### Category Constants #######
+input_dim = KCM.num_clusters
+hidden_dims = [200,200],
+dropout = 0.3
+classes = KCM.num_cats
+epochs = 1000
+model_type = 'SMILE'
+temperature = 0.2
+
+
+
+
+For each run, testing:
+output_dim: [4,6,8]
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+>>>>>>>>>>>>>>>>2-dimensional dataset<<<<<<<<<<<<<<<<<<<<
+num_cats = 10
+num_samples = 500
+system_dimension = 2
+noisy_data=False
+delay_embeddings = 3
+num_segments = 25
+num_clusters = 8
+codebook_training_size = 420
+train_classes = range(7), range(3), [0,1,2,4,5,6,7,8,9]
+
+
+range(7) results:
+	kcm trains enough to separate out a couple classes - the rest are bunched together.
+	Testing results are same and new classes bunched with the bulk.
+	basic trainer separates training data out really well
+	same for testing data (old classes), but new classes lumped in with the rest
+
+
+
+
+>>>>>>>>>>>>>>>>2-dimensional dataset<<<<<<<<<<<<<<<<<<<<
+
+category names: ['harmonic_oscillator', 'van_der_pol_oscillator', 'nonlinear_spring', 'piecewise_linear_oscillator'] (0,3,5,6)
+
+num_cats = 4			<<-----
+num_samples = 100		<<-----
+num_clusters = 12		<<-----
+train_classes = range(3), range(2)
+
+
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+>>>>>>>>>>>>>>>>3-dimensional dataset<<<<<<<<<<<<<<<<<<<<
+num_cats = 7
+num_samples = 250
+system_dimension = 3
+noisy_data=False
+delay_embeddings = 5
+num_segments = 20
+num_clusters = 8
+codebook_training_size = 500
+train_classes = range(7), range(3)
+
+
+
+
+>>>>>>>>>>>>>>>>Small 3-dimensional dataset<<<<<<<<<<<<<<<<<<<<
+Same as above except for the following:
+
+category names: ['lorenz', 'rossler', 'chen', 'halvorsen'] (0,1,2,3)
+
+num_cats = 4			<<-----
+num_samples = 100		<<-----
+train_classes = range(3), range(2)
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+
+TESTING
+
+
+Big 2-Dimensional dataset
+KCM_20250812_144800_006d0b9b: train_classes = range(7)
+KCM_20250815_183024_3168acc0: train_classes = range(7), NOISY
+KCM_20250812_154841_f871f182: train_classes = range(3)
+KCM_20250812_163437_598b033b: train_classes = [0,1,2,4,5,6,7,8,9]
+
+
+Small 2-Dimensional dataset
+KCM_20250812_225649_79087582: train_classes = range(3)
+KCM_20250812_231933_fa8f8010: train_classes = range(2)
+
+Big 3-dimensional dataset
+KCM_20250814_223735_8204d02b: train_classes = range(3)
+KCM_20250814_233322_1f5f6eec: train_classes = range(5)
+
+Small 3-dimensional dataset
+KCM_20250815_040115_7beba451: train_classes = range(3)
+KCM_20250815_041107_7f05a23f: train_classes = range(2)
+
+
+ 
+To Delete:

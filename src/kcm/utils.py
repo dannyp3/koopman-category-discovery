@@ -78,3 +78,72 @@ def save_artifact(obj, run_dir, name):
     path = Path(run_dir) / f"{name}.pkl"
     joblib.dump(obj, path)
     print(f"Saved trainer object to {path}")
+
+
+
+
+
+
+def fix_colab_path(colab_path: str, experiments_root: Path) -> Path:
+    if "experiments" in colab_path:
+        # Strip everything before and including 'experiments'
+        tail = Path(colab_path).parts
+        idx = tail.index("experiments")
+        relative_path = Path(*tail[idx:])
+        return experiments_root / relative_path.relative_to("experiments")
+    else:
+        # Fallback: treat as already correct or skip
+        return Path(colab_path)
+    
+
+
+
+def load_koopman_and_discoveries(kcm_folder: str, experiments_root: str = Path.cwd().parent / "experiments"):
+    
+    kcm_path = Path(experiments_root) / kcm_folder
+    koopman_model_path = kcm_path / "koopman_model.pkl"
+    koopman_params_path = kcm_path / "params.json"
+
+    # Load Koopman model and params
+    # koopman_model = joblib.load(koopman_model_path)
+    with open(koopman_params_path, "r") as f:
+        koopman_params = json.load(f)
+
+    # Find associated discovery runs
+    discoveries = []
+    for path in Path(experiments_root).glob("discovery_run_*"):
+        params_path = path / "discovery_params.json"
+        if not params_path.exists():
+            continue
+            
+        with open(params_path, "r") as f:
+            disc_params = json.load(f)
+
+        # Match based on Koopman path if available
+        koopman_path_raw = disc_params.get("koopman_path", "")
+        fixed_koopman_path = fix_colab_path(koopman_path_raw, experiments_root)
+        
+        if kcm_folder in str(fixed_koopman_path):
+            entry = {"path": path, "params": disc_params}
+
+
+            # Load trainer objects
+            kcm_trainer_path = path / "kcm_trainer.pkl"
+            basic_trainer_path = path / "basic_trainer.pkl"
+            if kcm_trainer_path.exists():
+                # print('Loading in kcm_trainer...')
+                entry["kcm_trainer"] = joblib.load(kcm_trainer_path)
+            if basic_trainer_path.exists():
+                # print('Loading in basic_trainer...')
+                entry["basic_trainer"] = joblib.load(basic_trainer_path)
+
+            
+            discoveries.append(entry)
+
+        
+
+    return {
+        # "model": koopman_model,
+        "params": koopman_params,
+        "discoveries": discoveries
+    }

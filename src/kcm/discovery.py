@@ -441,6 +441,8 @@ class CategoryDiscoveryTrainer():
         self.all_testing_hashes = []
         
         self.losses = []
+        self.testing_losses = []
+
         for i in tqdm(range(self.epochs), desc=f'Training {self.model_type} Model'):
         
             if self.model_type == 'baseline':
@@ -448,22 +450,29 @@ class CategoryDiscoveryTrainer():
                 testing_features, _, _ = self.model(self.X_test)
                 sc_loss = sup_con_loss(training_features, self.y_train, temp=self.temperature)
                 reg_loss = 0
+
+                test_sc_loss = sup_con_loss(testing_features, self.y_test, temp=self.temperature)
+                test_reg_loss = 0
                 
             elif self.model_type == 'SMILE':
                 training_features, training_hash_features, _ = self.model(self.X_train)
                 testing_features, testing_hash_features, _ = self.model(self.X_test)
                 sc_loss = sup_con_loss(training_features, self.y_train, temp=self.temperature)
-        
                 reg_loss = (1 - torch.abs(training_hash_features)).mean()
-                
-        
+
+                test_sc_loss = sup_con_loss(testing_features, self.y_test, temp=self.temperature)
+                test_reg_loss = (1 - torch.abs(testing_hash_features)).mean()
+
             loss = sc_loss * 1 + reg_loss * 3
-            
+
+            testing_loss = test_sc_loss * 1 + test_reg_loss * 3
+
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
         
             self.losses.append(loss.item())
+            self.testing_losses.append(testing_loss.item())
         
             # Create Cluster ids for train, test, and full data sets
             training_hash_ids, training_hashes, new_training_labels = create_hash_ids(training_features, self.y_train)
@@ -507,12 +516,17 @@ class CategoryDiscoveryTrainer():
     
         plt.figure(figsize=(5,2))
         if log:
-            plt.plot(np.log(np.array(self.losses)))
+            plt.plot(np.log(np.array(self.losses)), label='Training')
+            if hasattr(self, 'testing_losses'):
+                plt.plot(np.log(np.array(self.testing_losses)), label='Testing')
         else:
-            plt.plot(self.losses)
+            plt.plot(self.losses, label='Training')
+            if hasattr(self, 'testing_losses'):
+                plt.plot(self.testing_losses, label='Testing')
         plt.xlabel('Epoch')
-        plt.ylabel('Loss')
-        plt.title('Supervised Contrastive Loss')
+        plt.ylabel('Loss') if not log else plt.ylabel('Log Loss')
+        plt.title('Supervised Contrastive Loss') if not log else plt.title('Log Supervised Contrastive Loss')
+        plt.legend()
         if show:
             plt.show()
 
