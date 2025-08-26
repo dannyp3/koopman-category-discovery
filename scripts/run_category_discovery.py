@@ -23,7 +23,7 @@ plt.style.use('default')
 
 
 ######## Koopman Category Model Version ########
-KCM_name = "KCM_20250815_183024_3168acc0"
+KCM_name = "KCM_20250818_174401_7dc47c3f"
 output_dims = [4, 6, 8]
 ################################################
 

@@ -21,12 +21,12 @@ rng = np.random.default_rng(seed)
 
 
 ############### Shared Inputs ###############
-num_cats = 10 # 10, 4
-num_samples = 500 # 500, 100
-system_dimension = 2 # 2
+num_cats = 4 # 10, 4
+num_samples = 100 # 500, 100
+system_dimension = 3 # 2
 test_size = 0.2
 category_discovery=True
-train_classes = range(7) # range(3) # range(7)
+train_classes = range(2) # range(3) # range(7)
 noisy_data=True
 noise_std=0.01
 samples_name = f'noisy_{noise_std}_samples' if noisy_data else 'samples'
@@ -40,13 +40,13 @@ use_gpu = False
 
 
 ############ kcm-specific inputs ############
-delay_embeddings = 3
-num_segments = 25 # 30, 8
+delay_embeddings = 5
+num_segments = 20 # 30, 8
 svd_rank = None
 dmd_rank = None
 q = 1
 num_clusters = 8 # 15, 5
-codebook_training_size = 420 # 490 # divides <num training classes>
+codebook_training_size = 500 # 490 # divides <num training classes>
 normalize_kcm_inputs=True
 soft_clustering=True
 tau = 0.1

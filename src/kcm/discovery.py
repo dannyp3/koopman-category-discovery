@@ -690,6 +690,49 @@ class CategoryDiscoveryTrainer():
 
 
 
+def plot_scores(trainer,index=-1):
+        
+    figs, axes = plt.subplots(1,2,figsize=(8,3))
+    
+    minimum = -0.05
+    maximum = 1.05
+    
+    # Plot independent & weighted scores
+    axes[0].plot(trainer.old_scores[:index],linewidth=0.8,color='blue',label='Old Classes')
+    axes[0].plot(trainer.new_scores[:index],linewidth=0.8,color='red',label='New Classes')
+    axes[0].plot(trainer.weighted_scores[:index],linewidth=2,color='purple',label='Total')
+    axes[0].set_title('Greedy-Hungarian')
+    axes[0].set_xlabel('Epoch')
+    axes[0].set_ylabel('Score')
+    axes[0].set_ylim([minimum, maximum])
+    axes[0].legend()
+    
+    # Plot global scores
+    axes[1].plot(trainer.old_global_scores[:index],linewidth=0.8,color='blue',label='Old Classes')
+    axes[1].plot(trainer.new_global_scores[:index],linewidth=0.8,color='red',label='New Classes')
+    axes[1].plot(trainer.global_scores[:index],linewidth=2,color='purple',label='Total')
+    axes[1].set_title('Strict-Hungarian')
+    axes[1].set_xlabel('Epoch')
+    axes[1].set_ylim([minimum, maximum])
+    axes[1].legend()
+    
+    # # Plot training and testing clustering scores
+    # axes[2].plot(trainer.train_aris[:index],linewidth=2,color='lightblue',label='Train ARI')
+    # axes[2].plot(trainer.train_nmis[:index],linewidth=1,color='mediumblue',label='Train NMI')
+    # axes[2].plot(trainer.train_amis[:index],linewidth=0.5,color='darkblue',label='Train AMI')
+    # axes[2].plot(trainer.test_aris[:index],linewidth=2,color='lightcoral',label='Test ARI')
+    # axes[2].plot(trainer.test_nmis[:index],linewidth=1,color='red',label='Test NMI')
+    # axes[2].plot(trainer.test_amis[:index],linewidth=0.5,color='darkred',label='Test AMI')
+    # axes[2].set_title('Clustering Scores')
+    # axes[2].set_xlabel('Epoch')
+    # axes[2].set_ylim([minimum, maximum])
+    # axes[2].legend()
+    
+    
+    plt.suptitle('Category Discovery Metrics')
+    plt.tight_layout()
+    plt.show()
+
 
 
 

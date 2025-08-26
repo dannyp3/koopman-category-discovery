@@ -32,7 +32,6 @@ output_dim: [4,6,8]
 num_cats = 10
 num_samples = 500
 system_dimension = 2
-noisy_data=False
 delay_embeddings = 3
 num_segments = 25
 num_clusters = 8
@@ -69,12 +68,11 @@ train_classes = range(3), range(2)
 num_cats = 7
 num_samples = 250
 system_dimension = 3
-noisy_data=False
 delay_embeddings = 5
 num_segments = 20
 num_clusters = 8
 codebook_training_size = 500
-train_classes = range(7), range(3)
+train_classes = range(5), range(3)
 
 
 
@@ -99,21 +97,27 @@ Big 2-Dimensional dataset
 KCM_20250812_144800_006d0b9b: train_classes = range(7)
 KCM_20250815_183024_3168acc0: train_classes = range(7), NOISY
 KCM_20250812_154841_f871f182: train_classes = range(3)
+KCM_20250815_195158_3c61bd10: train_classes = range(3), NOISY
 KCM_20250812_163437_598b033b: train_classes = [0,1,2,4,5,6,7,8,9]
 
 
 Small 2-Dimensional dataset
 KCM_20250812_225649_79087582: train_classes = range(3)
+KCM_20250815_193653_2727b520: train_classes = range(3), NOISY
 KCM_20250812_231933_fa8f8010: train_classes = range(2)
+KCM_20250815_194527_425d0fa5: train_classes = range(2), NOISY
 
 Big 3-dimensional dataset
-KCM_20250814_223735_8204d02b: train_classes = range(3)
 KCM_20250814_233322_1f5f6eec: train_classes = range(5)
+KCM_20250818_122509_dbadfb78: train_classes = range(5), NOISY
+KCM_20250814_223735_8204d02b: train_classes = range(3)
+KCM_20250818_155036_2d80c710: train_classes = range(3), NOISY
 
 Small 3-dimensional dataset
 KCM_20250815_040115_7beba451: train_classes = range(3)
+KCM_20250818_165925_d4f6293e: train_classes = range(3), NOISY
 KCM_20250815_041107_7f05a23f: train_classes = range(2)
-
+KCM_20250818_174401_7dc47c3f: train_classes = range(2), NOISY
 
  
 To Delete:
