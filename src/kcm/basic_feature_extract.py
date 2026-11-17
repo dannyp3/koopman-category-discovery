@@ -135,7 +135,7 @@ class BasicFeatureExtractor():
             df_train_subset = self.df.loc[self.df['target'].isin(self.train_classes)]
 
             # self.df_train = df_train_subset.groupby('target').apply(lambda x : x.sample(n=int((1-self.test_size)*self.num_samples), random_state=self.seed)).reset_index(drop=True)
-            self.df_train = df_train_subset.groupby('target').apply(lambda x : x.sample(frac=(1 - self.test_size), random_state=self.seed)).reset_index(drop=True)
+            self.df_train = pd.concat([x.sample(frac=(1 - self.test_size), random_state=self.seed) for _, x in df_train_subset.groupby('target')]).reset_index(drop=True)
             self.known_class_train_idx = np.array(list(set(self.df_train['count'])))
             known_class_test_idx = self.df.loc[self.df['target'].isin(self.train_classes) & ~self.df['count'].isin(self.known_class_train_idx),'count'].values
             
@@ -158,7 +158,7 @@ class BasicFeatureExtractor():
         # Train on all classes
         if not category_discovery:
 
-            self.df_train = self.df.groupby('target').apply(lambda x : x.sample(n=int((1-test_size)*self.num_samples), random_state=self.seed)).reset_index(drop=True)
+            self.df_train = pd.concat([x.sample(n=int((1-test_size)*self.num_samples), random_state=self.seed) for _, x in self.df.groupby('target')]).reset_index(drop=True)
             training_indices = list(set(self.df_train['count']))
             self.df_test = self.df.loc[~self.df['count'].isin(training_indices)].reset_index(drop=True)
 

@@ -418,7 +418,7 @@ class KoopmanCategoryModel:
         self.logger.info(f'Testing set size: {self.df_test.shape[0]}')
         
         
-        samples_to_keep = self.df_train[['target','sample']].drop_duplicates().groupby('target').apply(lambda g: g.sample(class_size, random_state=self.seed)).reset_index(drop=True)
+        samples_to_keep = pd.concat([g.sample(class_size, random_state=self.seed) for _, g in self.df_train[['target','sample']].drop_duplicates().groupby('target')]).reset_index(drop=True)
         self.df_sample = self.df.merge(samples_to_keep, on=["target", "sample"], how="inner")
 
         if len(self.df_sample) < self.codebook_training_size:
@@ -461,11 +461,10 @@ class KoopmanCategoryModel:
             ValueError(f'Codebook training size ({self.codebook_training_size}) must divide number of training classes ({len(self.train_classes)})')
 
         # Take an identically sized sample from each target class for the codebook
-        samples_to_keep = (self.df_train[['target','sample','segment']]
-            .groupby('target')
-            .apply(lambda g: g.sample(class_size, random_state=self.seed, replace=False))
-            .reset_index(drop=True)
-        )
+        samples_to_keep = pd.concat(
+            [g.sample(class_size, random_state=self.seed, replace=False)
+             for _, g in self.df_train[['target','sample','segment']].groupby('target')]
+        ).reset_index(drop=True)
         self.df_sample = self.df.merge(samples_to_keep, on=["target","sample","segment"], how="inner")
 
         if len(self.df_sample) < self.codebook_training_size:

@@ -4,6 +4,7 @@ from matplotlib import pyplot as plt
 
 
 from pathlib import Path
+import argparse
 import os
 
 from kcm.koopman_category_model import KoopmanCategoryModel
@@ -12,25 +13,37 @@ from kcm.discovery import train_test_split_indices
 plt.style.use('dark_background')
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# Optional command-line overrides (defaults match the values used for the thesis)
+parser = argparse.ArgumentParser(description='Build and save a Koopman Category Model')
+parser.add_argument('--num-cats', type=int, default=4)
+parser.add_argument('--num-samples', type=int, default=100)
+parser.add_argument('--num-train-classes', type=int, default=2)
+parser.add_argument('--num-segments', type=int, default=20)
+parser.add_argument('--num-clusters', type=int, default=8)
+parser.add_argument('--codebook-training-size', type=int, default=500)
+parser.add_argument('--seed', type=int, default=42)
+args = parser.parse_args()
 
 
 # Reproducibility Code
-seed=42
+seed=args.seed
 rng = np.random.default_rng(seed)
 
 
 
 ############### Shared Inputs ###############
-num_cats = 4 # 10, 4
-num_samples = 100 # 500, 100
+num_cats = args.num_cats # 10, 4
+num_samples = args.num_samples # 500, 100
 system_dimension = 3 # 2
 test_size = 0.2
 category_discovery=True
-train_classes = range(2) # range(3) # range(7)
+train_classes = range(args.num_train_classes) # range(3) # range(7)
 noisy_data=True
 noise_std=0.01
 samples_name = f'noisy_{noise_std}_samples' if noisy_data else 'samples'
-data_path = (rf"C:\Users\peterdb1\Documents\Masters in ACM\(i-j) 625.801-802 - ACM Master's Research\Technical Work\koopman-category-discovery\data",
+data_path = (str(REPO_ROOT / "data"),
                 f"{system_dimension}-dimensional-systems",
                 f"dataset_{num_cats}_class_{num_samples}_{samples_name}.pkl"
             )
@@ -41,12 +54,12 @@ use_gpu = False
 
 ############ kcm-specific inputs ############
 delay_embeddings = 5
-num_segments = 20 # 30, 8
+num_segments = args.num_segments # 30, 8
 svd_rank = None
 dmd_rank = None
 q = 1
-num_clusters = 8 # 15, 5
-codebook_training_size = 500 # 490 # divides <num training classes>
+num_clusters = args.num_clusters # 15, 5
+codebook_training_size = args.codebook_training_size # 490 # divides <num training classes>
 normalize_kcm_inputs=True
 soft_clustering=True
 tau = 0.1

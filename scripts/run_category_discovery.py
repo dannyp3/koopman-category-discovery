@@ -3,8 +3,10 @@ import pandas as pd
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import pathlib
+import argparse
+import json
 import os
 
 from kcm.utils import load_koopman_model, create_discovery_run_dir, save_discovery_params, save_plot, save_artifact, copy_koopman_params_to_discovery
@@ -18,21 +20,34 @@ from kcm.discovery import (
 plt.style.use('default')
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXPERIMENTS_DIR = REPO_ROOT / 'experiments'
 
 
+parser = argparse.ArgumentParser(description='Run category discovery on a saved Koopman Category Model')
+parser.add_argument('--kcm-name', default=None,
+                    help='KCM run folder inside <repo>/experiments (default: most recent KCM_* folder)')
+parser.add_argument('--output-dims', type=int, nargs='+', default=[4, 6, 8])
+parser.add_argument('--epochs', type=int, default=1000)
+args = parser.parse_args()
 
 
 ######## Koopman Category Model Version ########
-KCM_name = "KCM_20250818_174401_7dc47c3f"
-output_dims = [4, 6, 8]
+KCM_name = args.kcm_name # e.g. "KCM_20250818_174401_7dc47c3f"
+output_dims = args.output_dims
 ################################################
 
-pathlib.PosixPath = pathlib.WindowsPath
+if KCM_name is None:
+    KCM_name = sorted(p.name for p in EXPERIMENTS_DIR.glob('KCM_*') if (p / 'koopman_model.pkl').exists())[-1]
+
+# Models pickled on Linux/Colab contain PosixPath objects; this lets Windows unpickle them
+if os.name == 'nt':
+    pathlib.PosixPath = pathlib.WindowsPath
 
 
 print(f'Loading in Koopman Category Model at: {KCM_name}')
 
-full_path = Path(r"C:\Users\peterdb1\Documents\Masters in ACM\(i-j) 625.801-802 - ACM Master's Research\Technical Work\koopman-category-discovery\experiments")
+full_path = EXPERIMENTS_DIR
 koopman_dir = full_path / KCM_name
 KCM, KCM_params = load_koopman_model(koopman_dir)
 for par in KCM_params:
@@ -48,7 +63,7 @@ for output_dim in output_dims:
                        'hidden_dims' : [200,200], # [200, 200], [1024, 512, 256]
                        'dropout' : 0.3,
                        'classes' : KCM.num_cats,
-                       'epochs' : 1000,
+                       'epochs' : args.epochs,
                        'model_type' : 'SMILE', # baseline, SMILE
                        'temperature' : 0.2}
     
@@ -61,9 +76,11 @@ for output_dim in output_dims:
     print('\n\n', discovery_run_dir.stem, output_dim)
     
     
+    # If the model was built on another machine, look for the dataset under <repo>/data instead
     if not os.path.isfile(KCM.data_path):
-        path = Path(KCM.data_path)
-        KCM.data_path = Path.cwd().parent / 'data' / path.parents[0].stem / (path.stem + '.pkl')
+        raw = str(KCM.data_path)
+        path = PureWindowsPath(raw) if '\\' in raw else Path(raw)
+        KCM.data_path = REPO_ROOT / 'data' / path.parent.name / (path.stem + '.pkl')
     
     
     
@@ -180,3 +197,22 @@ for output_dim in output_dims:
     
     # basic_trainer.plot_hashes(index=index,split_testing=False,show=True,save_dir=discovery_run_dir,base_filename="basic")
     basic_trainer.plot_hashes(index=index,split_testing=False,show=False,save_dir=discovery_run_dir,base_filename="basic")
+    
+    
+    
+    # Save final-epoch metrics for quick comparison across runs
+    def _final_metrics(trainer):
+        return {'test_acc_all' : float(trainer.global_scores[-1]),
+                'test_acc_old' : float(trainer.old_global_scores[-1]),
+                'test_acc_new' : float(trainer.new_global_scores[-1]),
+                'test_ari' : float(trainer.test_aris[-1]),
+                'test_nmi' : float(trainer.test_nmis[-1]),
+                'train_ari' : float(trainer.train_aris[-1]),
+                'unique_train_hashes' : int(trainer.unique_training_hashes[-1]),
+                'unique_test_hashes' : int(trainer.unique_testing_hashes[-1]),
+                'final_train_loss' : float(trainer.losses[-1])}
+    
+    results = {'output_dim' : output_dim, 'kcm' : _final_metrics(kcm_trainer), 'basic' : _final_metrics(basic_trainer)}
+    with open(discovery_run_dir / 'final_metrics.json', 'w') as f:
+        json.dump(results, f, indent=2)
+    print(json.dumps(results, indent=2))

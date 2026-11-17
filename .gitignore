@@ -12,3 +12,4 @@ backup_experiments/
 *.html
 egg-info
 *.pkl
+.venv/
